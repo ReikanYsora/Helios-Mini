@@ -27,3 +27,11 @@ All notable changes to Helios Mini will be documented in this file.
   touch/audio I2C bus moved to it too; `espressif/button`'s real entry
   point is `iot_button_new_gpio_device()`) — see
   `docs/HARDWARE_REFERENCE.md`.
+- Wi-Fi provisioning (`firmware/networking/provisioning`), pulled forward
+  from V0.2 (spec Section 16): on first boot the device starts an open
+  SoftAP `HELIOS-MINI-XXXX` + a plain HTTP server at `http://192.168.4.1/`
+  where the user scans/picks a Wi-Fi network and enters its password, no
+  app or JavaScript required. Credentials are saved to NVS and the device
+  reboots into station mode. Holding BOOT at power-on forces re-entry into
+  setup. Home Assistant discovery/pairing (spec Sections 17-18) is still
+  unstarted V0.2 scope.

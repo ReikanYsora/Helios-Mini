@@ -10,6 +10,7 @@ idf_component_register(
         buttons
         audio
         wifi
+        provisioning
         storage
         diagnostics
         animations

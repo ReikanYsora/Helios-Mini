@@ -2,18 +2,40 @@
 
 ESP-IDF firmware for the Waveshare ESP32-S3-Touch-AMOLED-1.32, targeting the
 **V0.1 — Hardware Bring-Up** milestone from `docs/SPEC.md` (Section 34):
-display, touch, Wi-Fi, speaker, microphone, buttons, USB. Pairing with Home
-Assistant, the Helios UI, OTA, and diagnostics come in later versions.
+display, touch, Wi-Fi, speaker, microphone, buttons, USB — plus, ahead of
+schedule, the Wi-Fi provisioning slice of **V0.2** (spec Section 16): a
+SoftAP + browser setup page, no more hardcoded dev credentials required.
+Home Assistant pairing, the Helios UI, OTA, and diagnostics come in later
+versions.
 
-## Status: V0.1, builds clean — not yet flashed to hardware
+## Status: builds clean — not yet flashed to hardware
 
 Builds with **zero errors and zero warnings** against ESP-IDF 5.5.1
 (`idf.py set-target esp32s3 && idf.py build`, verified with the actual
 resolved managed-component versions: `lvgl/lvgl 9.5.0`,
 `espressif/esp_lcd_sh8601 2.0.1~1`, `espressif/button 4.2.0`,
-`espressif/es8311 1.0.0~1`). Output binary: 1.34 MB, 78% of the app
+`espressif/es8311 1.0.0~1`). Output binary: 1.37 MB, 78% of the app
 partition free. Not yet flashed or run on real hardware — that's the next
 step once the board is in hand (see "Day-of checklist" below).
+
+### Wi-Fi setup flow (implemented)
+
+On first boot (no stored credentials), Helios Mini starts an open Wi-Fi
+network named **`HELIOS-MINI-XXXX`** (`XXXX` from the station MAC) and a
+plain HTTP server at **`http://192.168.4.1/`**. The screen shows the AP name
+and URL. Connect a phone/laptop to that network, open the URL, pick a
+scanned network (or type one manually), enter its password, submit — the
+device saves the credentials to NVS and reboots straight into station mode.
+No app, no JavaScript, no captive-portal auto-popup (open the URL manually).
+
+To re-enter setup later (e.g. after a password change), **hold BOOT while
+powering on**; this is checked right at the start of `app_main()` and skips
+straight to the portal regardless of stored credentials.
+
+The old `idf.py menuconfig` dev-SSID fallback (`hardware/networking/wifi`,
+`CONFIG_HELIOS_WIFI_DEV_SSID`) still exists but is now effectively unused in
+the normal flow — `main.c` only calls `wifi_sta_start()` once credentials
+are already confirmed present.
 
 Two of the API-surface risks flagged during the initial skeleton write
 turned out to be real and are now fixed in code:
@@ -40,14 +62,16 @@ correctness can only be confirmed once the panel lights up.
 ```sh
 source firmware/activate.sh     # sets up the ESP-IDF env (see below)
 cd firmware
-idf.py menuconfig               # under "Helios Mini", set a dev Wi-Fi
-                                 # SSID/password for bring-up
 idf.py -p <port> flash monitor
 ```
 
 `idf.py build` has already been run and succeeds, so this should go
 straight to flashing. If `<port>` isn't obvious, `ls /dev/tty.usb*` (macOS)
 after plugging in the board over USB-C.
+
+No `menuconfig` step needed anymore — on first boot the device starts its
+own setup network. Join **`HELIOS-MINI-XXXX`** from a phone, browse to
+**`http://192.168.4.1/`**, pick your Wi-Fi network, and submit.
 
 ## Requirements
 
@@ -77,9 +101,10 @@ idf.py build
 idf.py -p <port> flash monitor
 ```
 
-The component manager fetches `lvgl/lvgl` (^9), `espressif/esp_lcd_sh8601`,
-`espressif/button`, and `espressif/es8311` automatically (already cached in
-`managed_components/`, not committed to git — see `.gitignore`).
+The component manager fetches `lvgl/lvgl`, `espressif/esp_lcd_sh8601`,
+`espressif/button`, and `espressif/es8311` automatically, pinned to the
+verified versions in `firmware/dependencies.lock` (committed; cached copies
+land in `managed_components/`, not committed — see `.gitignore`).
 
 ## Layout
 
@@ -99,15 +124,20 @@ firmware/
 │   ├── display/            QSPI CO5300 bring-up + LVGL v9 port
 │   ├── buttons/            BOOT/PWR via espressif/button
 │   └── audio/              I2S + PA enable + ES8311
-├── networking/wifi/       STA connect, NVS credentials + dev Kconfig fallback
+├── networking/
+│   ├── wifi/               STA connect, NVS credentials + dev Kconfig fallback
+│   └── provisioning/       SoftAP + HTTP setup portal (spec Section 16 slice)
 ├── storage/                NVS string get/set wrapper
 ├── diagnostics/            periodic heap/PSRAM/uptime log
 └── ui/animations/          boot sequence (spec Section 15), Helios logo asset
 ```
 
-`helios/`, `ota/`, and the rest of `ui/` (home/solar/battery/consumption/grid)
-are intentionally still empty — V0.2/V0.3/V0.4 scope per the roadmap in
-`docs/SPEC.md` Section 34.
+`helios/`, `networking/discovery/`, `ota/`, and the rest of `ui/`
+(home/solar/battery/consumption/grid) are intentionally still empty — the
+remaining V0.2/V0.3/V0.4 scope per the roadmap in `docs/SPEC.md` Section 34.
+In particular, `networking/provisioning/` only covers the Wi-Fi setup half
+of V0.2 - Home Assistant discovery and pairing (spec Sections 17-18) still
+need a dedicated HA custom integration and haven't been started.
 
 ## Regenerating the boot logo
 

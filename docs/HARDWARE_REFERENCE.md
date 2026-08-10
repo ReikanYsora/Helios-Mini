@@ -127,6 +127,21 @@ API surfaces turned out wrong and are now fixed in code; see
 - `ES8311_ADDRRES_0` (the codec I2C address constant, typo and all) is
   real, defined in `es8311.h` for backward compatibility.
 
+## Wi-Fi provisioning (added 2026-08-10)
+
+`networking/provisioning` runs the ESP32-S3 in **`WIFI_MODE_APSTA`**
+(AP + STA concurrently) so it can host the setup network *and* run a
+blocking `esp_wifi_scan_start()` on the STA side to list nearby networks
+in the setup page - both interfaces are backed by the built-in Wi-Fi radio
+and this concurrent mode is a standard, documented ESP-IDF capability, not
+something specific to this board.
+
+The setup AP (`HELIOS-MINI-XXXX`) is **open, no password**, deliberately -
+it only exists for the short window between unboxing and Wi-Fi setup, on a
+device with no other sensitive state yet. Revisit before commercial
+shipment: a per-unit default password (printed on the device/box) would be
+a low-cost hardening step once V0.4 packaging/production is in scope (spec
+Section 23).
 ## Still open (need the physical board)
 
 - [ ] Confirm the CO5300 init command sequence actually produces a correct

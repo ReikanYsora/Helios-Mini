@@ -5,6 +5,7 @@
 #include "buttons.h"
 #include "audio.h"
 #include "wifi_sta.h"
+#include "provisioning.h"
 #include "diagnostics.h"
 #include "boot_animation.h"
 #include "esp_log.h"
@@ -32,6 +33,10 @@ void app_main(void)
      * up, or it powers back off. See docs/HARDWARE_REFERENCE.md. */
     power_latch_on();
 
+    /* Checked this early so the window to catch "user is holding BOOT at
+     * power-on" isn't eaten by the init steps below. */
+    bool force_provisioning = provisioning_boot_forced();
+
     ESP_ERROR_CHECK(storage_init());
 
     i2c_bus_init();
@@ -44,7 +49,12 @@ void app_main(void)
         ESP_LOGW(TAG, "audio codec bring-up failed; I2S bus and PA enable are still usable");
     }
 
-    wifi_sta_start();
+    if (force_provisioning || !provisioning_has_credentials()) {
+        ESP_LOGI(TAG, "no Wi-Fi credentials (or BOOT held at power-on): starting setup portal");
+        provisioning_start_portal();
+    } else {
+        wifi_sta_start();
+    }
 
     diagnostics_start();
 

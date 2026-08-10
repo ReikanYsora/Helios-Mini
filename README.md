@@ -13,12 +13,13 @@ It's the little sibling of [Helios](https://github.com/ReikanYsora/Helios), the 
 **V0.1 — Hardware Bring-Up, builds clean, not yet flashed.** Firmware for
 display, touch, Wi-Fi, buttons, and audio is written in
 [`firmware/`](firmware/), ported from Waveshare's own reference firmware for
-this exact board, and compiles with zero errors/warnings against ESP-IDF
-5.5.1. Board arrives soon — first flash/monitor is next. See
-[`firmware/README.md`](firmware/README.md) for the day-of checklist,
-[`docs/SPEC.md`](docs/SPEC.md) for the full product specification, and
-[`docs/HARDWARE_REFERENCE.md`](docs/HARDWARE_REFERENCE.md) for the verified
-pin mapping and build notes.
+this exact board, plus the Wi-Fi setup slice of V0.2 (SoftAP + browser
+setup page, spec Section 16) ahead of schedule. Compiles with zero
+errors/warnings against ESP-IDF 5.5.1. Board arrives soon — first
+flash/monitor is next. See [`firmware/README.md`](firmware/README.md) for
+the day-of checklist, [`docs/SPEC.md`](docs/SPEC.md) for the full product
+specification, and [`docs/HARDWARE_REFERENCE.md`](docs/HARDWARE_REFERENCE.md)
+for the verified pin mapping and build notes.
 
 ## Hardware
 

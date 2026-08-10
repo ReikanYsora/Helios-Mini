@@ -1,0 +1,281 @@
+#include "provisioning.h"
+#include "board_config.h"
+#include "storage.h"
+#include "display.h"
+
+#include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_event.h"
+#include "esp_http_server.h"
+#include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_timer.h"
+#include "esp_err.h"
+#include "driver/gpio.h"
+#include "lvgl.h"
+
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+static const char *TAG = "provisioning";
+static const char *NVS_NAMESPACE = "helios_mini";
+
+#define PROVISIONING_AP_IP        "192.168.4.1"
+#define PROVISIONING_MAX_FORM_LEN 512
+#define PROVISIONING_REBOOT_DELAY_US (1500 * 1000)
+
+bool provisioning_has_credentials(void)
+{
+    char ssid[33] = {0};
+    return storage_get_string(NVS_NAMESPACE, "wifi_ssid", ssid, sizeof(ssid)) == ESP_OK && ssid[0] != '\0';
+}
+
+bool provisioning_boot_forced(void)
+{
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << HELIOS_PIN_BUTTON_BOOT,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&cfg);
+    return gpio_get_level(HELIOS_PIN_BUTTON_BOOT) == 0;
+}
+
+static void build_ap_ssid(char *out, size_t out_size)
+{
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(out, out_size, "HELIOS-MINI-%02X%02X", mac[4], mac[5]);
+}
+
+static void show_setup_screen(const char *ap_ssid)
+{
+    if (!display_lock(1000)) {
+        return;
+    }
+    lv_obj_t *label = lv_label_create(lv_screen_active());
+    lv_label_set_text_fmt(label,
+        "Wi-Fi setup\n\nConnect to:\n%s\n\nThen open:\nhttp://%s/",
+        ap_ssid, PROVISIONING_AP_IP);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label, lv_color_white(), 0);
+    lv_obj_center(label);
+    display_unlock();
+}
+
+/* ---- tiny x-www-form-urlencoded helpers (no JS/client-side dependency) ---- */
+
+static void url_decode(char *dst, const char *src)
+{
+    while (*src) {
+        if (*src == '%' && src[1] && src[2]) {
+            char hex[3] = { src[1], src[2], 0 };
+            *dst++ = (char)strtol(hex, NULL, 16);
+            src += 3;
+        } else if (*src == '+') {
+            *dst++ = ' ';
+            src++;
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    *dst = '\0';
+}
+
+/* Writes the decoded value of `key` from a form body into `out` (empty
+ * string if absent). `body` must be null-terminated. */
+static void form_get(const char *body, const char *key, char *out, size_t out_size)
+{
+    out[0] = '\0';
+    size_t key_len = strlen(key);
+    const char *p = body;
+    while (p) {
+        if (strncmp(p, key, key_len) == 0 && p[key_len] == '=') {
+            const char *val = p + key_len + 1;
+            const char *end = strchr(val, '&');
+            size_t len = end ? (size_t)(end - val) : strlen(val);
+            char raw[PROVISIONING_MAX_FORM_LEN];
+            if (len >= sizeof(raw)) {
+                len = sizeof(raw) - 1;
+            }
+            memcpy(raw, val, len);
+            raw[len] = '\0';
+            url_decode(out, raw);
+            if (strlen(out) >= out_size) {
+                out[out_size - 1] = '\0';
+            }
+            return;
+        }
+        p = strchr(p, '&');
+        if (p) {
+            p++;
+        }
+    }
+}
+
+static void html_escape(const char *src, char *dst, size_t dst_size)
+{
+    size_t di = 0;
+    for (size_t si = 0; src[si] != '\0' && di + 6 < dst_size; si++) {
+        char c = src[si];
+        if (c == '&')      { memcpy(&dst[di], "&amp;", 5); di += 5; }
+        else if (c == '<') { memcpy(&dst[di], "&lt;", 4); di += 4; }
+        else if (c == '>') { memcpy(&dst[di], "&gt;", 4); di += 4; }
+        else if (c == '"') { memcpy(&dst[di], "&quot;", 6); di += 6; }
+        else if (c == '\'') { memcpy(&dst[di], "&#39;", 5); di += 5; }
+        else { dst[di++] = c; }
+    }
+    dst[di] = '\0';
+}
+
+/* ---- HTTP handlers ---- */
+
+static esp_err_t root_get_handler(httpd_req_t *req)
+{
+    wifi_ap_record_t aps[20];
+    uint16_t ap_count = sizeof(aps) / sizeof(aps[0]);
+    wifi_scan_config_t scan_cfg = {0};
+
+    /* Blocking active scan on the STA side of APSTA mode; the AP keeps
+     * serving concurrently. Takes roughly 1-2s. */
+    if (esp_wifi_scan_start(&scan_cfg, true) != ESP_OK ||
+        esp_wifi_scan_get_ap_records(&ap_count, aps) != ESP_OK) {
+        ap_count = 0;
+    }
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr_chunk(req,
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>Helios Mini setup</title>"
+        "<style>body{font-family:sans-serif;max-width:420px;margin:2em auto;padding:0 1em;"
+        "background:#0b0b0f;color:#eee}h1{color:#efb428}"
+        "select,input,button{width:100%;padding:.6em;margin:.4em 0;box-sizing:border-box;"
+        "border-radius:6px;border:1px solid #444;background:#1a1a22;color:#eee;font-size:1em}"
+        "button{background:#efb428;color:#111;font-weight:bold;border:none}"
+        "label{font-size:.9em;opacity:.8}</style></head><body>"
+        "<h1>Helios Mini</h1><p>Choose your Wi-Fi network.</p>"
+        "<form method='POST' action='/connect'>"
+        "<label>Network</label><select name='ssid'>");
+
+    char escaped[200];
+    char chunk[512];
+    for (int i = 0; i < ap_count; i++) {
+        html_escape((const char *)aps[i].ssid, escaped, sizeof(escaped));
+        snprintf(chunk, sizeof(chunk), "<option value='%s'>%s (%d dBm)</option>",
+                 escaped, escaped, aps[i].rssi);
+        httpd_resp_sendstr_chunk(req, chunk);
+    }
+
+    httpd_resp_sendstr_chunk(req,
+        "</select>"
+        "<label>Or type a network name manually</label>"
+        "<input type='text' name='ssid_manual' placeholder='Network name (optional)'>"
+        "<label>Password</label>"
+        "<input type='password' name='password'>"
+        "<button type='submit'>Connect</button>"
+        "</form></body></html>");
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
+static void reboot_timer_cb(void *arg)
+{
+    esp_restart();
+}
+
+static esp_err_t connect_post_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > PROVISIONING_MAX_FORM_LEN) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form too large");
+        return ESP_FAIL;
+    }
+
+    char body[PROVISIONING_MAX_FORM_LEN + 1] = {0};
+    int received = httpd_req_recv(req, body, req->content_len);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "read failed");
+        return ESP_FAIL;
+    }
+    body[received] = '\0';
+
+    char ssid[33] = {0};
+    char ssid_manual[33] = {0};
+    char password[65] = {0};
+    form_get(body, "ssid", ssid, sizeof(ssid));
+    form_get(body, "ssid_manual", ssid_manual, sizeof(ssid_manual));
+    form_get(body, "password", password, sizeof(password));
+
+    const char *final_ssid = ssid_manual[0] != '\0' ? ssid_manual : ssid;
+    if (final_ssid[0] == '\0') {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "no network selected");
+        return ESP_FAIL;
+    }
+
+    storage_set_string(NVS_NAMESPACE, "wifi_ssid", final_ssid);
+    storage_set_string(NVS_NAMESPACE, "wifi_pass", password);
+    ESP_LOGI(TAG, "credentials saved for '%s', rebooting into station mode", final_ssid);
+
+    char escaped_ssid[200];
+    html_escape(final_ssid, escaped_ssid, sizeof(escaped_ssid));
+    char resp[640];
+    snprintf(resp, sizeof(resp),
+        "<!doctype html><html><body style='font-family:sans-serif;text-align:center;margin-top:3em;"
+        "background:#0b0b0f;color:#eee'>"
+        "<h1 style='color:#efb428'>Connecting&hellip;</h1>"
+        "<p>Helios Mini is restarting and will try to join <b>%s</b>.</p>"
+        "<p>You can close this page.</p></body></html>", escaped_ssid);
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req, resp);
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = &reboot_timer_cb,
+        .name = "provisioning_reboot",
+    };
+    esp_timer_handle_t timer;
+    esp_timer_create(&timer_args, &timer);
+    esp_timer_start_once(timer, PROVISIONING_REBOOT_DELAY_US);
+
+    return ESP_OK;
+}
+
+void provisioning_start_portal(void)
+{
+    char ap_ssid[24];
+    build_ap_ssid(ap_ssid, sizeof(ap_ssid));
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_ap();
+    esp_netif_create_default_wifi_sta(); /* APSTA mode, so scanning works while the AP serves clients */
+
+    wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&init_cfg));
+
+    wifi_config_t ap_config = {0};
+    strncpy((char *)ap_config.ap.ssid, ap_ssid, sizeof(ap_config.ap.ssid) - 1);
+    ap_config.ap.ssid_len = strlen(ap_ssid);
+    ap_config.ap.channel = 1;
+    ap_config.ap.authmode = WIFI_AUTH_OPEN; /* first-boot setup network; see docs/HARDWARE_REFERENCE.md */
+    ap_config.ap.max_connection = 4;
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "provisioning AP '%s' started, http://%s/ once connected", ap_ssid, PROVISIONING_AP_IP);
+    show_setup_screen(ap_ssid);
+
+    httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
+    http_cfg.max_uri_handlers = 4;
+    httpd_handle_t server = NULL;
+    ESP_ERROR_CHECK(httpd_start(&server, &http_cfg));
+
+    httpd_uri_t root_uri = { .uri = "/", .method = HTTP_GET, .handler = root_get_handler };
+    httpd_uri_t connect_uri = { .uri = "/connect", .method = HTTP_POST, .handler = connect_post_handler };
+    httpd_register_uri_handler(server, &root_uri);
+    httpd_register_uri_handler(server, &connect_uri);
+}
