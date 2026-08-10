@@ -1,0 +1,30 @@
+# ESP-IDF / firmware build artifacts
+firmware/build/
+firmware/**/build/
+firmware/managed_components/
+firmware/dependencies.lock
+firmware/sdkconfig
+firmware/sdkconfig.old
+*.bin
+*.elf
+*.map
+
+# Home Assistant custom_component dev artifacts
+home-assistant/**/__pycache__/
+*.pyc
+
+# CAD / 3D printing working files
+enclosure/**/*.blend1
+enclosure/**/*.3mf.bak
+enclosure/**/*~
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Node (installer / tools, if any)
+node_modules/
+dist/
