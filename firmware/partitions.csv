@@ -1,0 +1,7 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# Single-app table, matching the board's factory default for V0.1 bring-up.
+# An OTA-capable table (ota_0/ota_1/otadata) is V0.4 scope, introduced
+# alongside firmware/ota/ - see docs/SPEC.md Section 21.
+nvs,      data, nvs,     ,        0x6000,
+phy_init, data, phy,     ,        0x1000,
+factory,  app,  factory, ,        6M,

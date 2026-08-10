@@ -10,7 +10,14 @@ It's the little sibling of [Helios](https://github.com/ReikanYsora/Helios), the 
 
 ## Status
 
-**Product Definition / V0.1** — hardware bring-up not yet started. See [`docs/SPEC.md`](docs/SPEC.md) for the full product specification.
+**V0.1 — Hardware Bring-Up (unbuilt).** Firmware skeleton for display, touch,
+Wi-Fi, buttons, and audio is written in [`firmware/`](firmware/), ported from
+Waveshare's own reference firmware for this exact board, but has not yet been
+compiled or flashed on hardware — see [`firmware/README.md`](firmware/README.md)
+for build instructions and open verification items. See
+[`docs/SPEC.md`](docs/SPEC.md) for the full product specification and
+[`docs/HARDWARE_REFERENCE.md`](docs/HARDWARE_REFERENCE.md) for the verified
+pin mapping.
 
 ## Hardware
 

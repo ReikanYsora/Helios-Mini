@@ -1,0 +1,14 @@
+menu "Helios Mini"
+
+    config HELIOS_WIFI_DEV_SSID
+        string "Development Wi-Fi SSID (bring-up only, until provisioning ships)"
+        default ""
+        help
+            Used only when no credentials are stored in NVS yet. Real
+            SoftAP-based provisioning (spec Section 16) is V0.2 scope.
+
+    config HELIOS_WIFI_DEV_PASSWORD
+        string "Development Wi-Fi password (bring-up only, until provisioning ships)"
+        default ""
+
+endmenu

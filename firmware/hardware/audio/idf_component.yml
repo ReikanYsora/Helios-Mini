@@ -1,0 +1,3 @@
+dependencies:
+  espressif/es8311:
+    version: "*"
