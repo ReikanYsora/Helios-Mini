@@ -13,9 +13,17 @@ All notable changes to Helios Mini will be documented in this file.
   firmware (`docs/HARDWARE_REFERENCE.md`).
 - Helios brand logo asset (`assets/brand/helios-logo.svg`, from the `Helios`
   repo) and an SVG-to-LVGL-v9 C image generator (`tools/asset-gen/svg_to_lvgl.py`).
-- V0.1 Hardware Bring-Up firmware skeleton (ESP-IDF, unbuilt): power latch,
-  shared I2C bus, CST820 touch, QSPI CO5300 display + LVGL v9 port,
-  BOOT/PWR buttons, I2S + ES8311 audio bring-up, Wi-Fi station connect,
-  NVS storage wrapper, diagnostics logging, and the Section 15 boot
-  animation using the Helios logo. See `firmware/README.md` for build
-  instructions and known unverified API surfaces.
+- V0.1 Hardware Bring-Up firmware (ESP-IDF): power latch, shared I2C bus,
+  CST820 touch, QSPI CO5300 display + LVGL v9 port, BOOT/PWR buttons,
+  I2S + ES8311 audio bring-up, Wi-Fi station connect, NVS storage wrapper,
+  diagnostics logging, and the Section 15 boot animation using the Helios
+  logo. See `firmware/README.md` for the day-of build/flash checklist.
+- Builds clean (zero errors/warnings) against ESP-IDF 5.5.1, with
+  `firmware/dependencies.lock` committed to pin the exact managed-component
+  versions verified to compile: `lvgl/lvgl 9.5.0`,
+  `espressif/esp_lcd_sh8601 2.0.1~1`, `espressif/button 4.2.0`,
+  `espressif/es8311 1.0.0~1`. Fixed two guessed API surfaces that turned out
+  wrong (`espressif/es8311` needs the legacy I2C driver, so the shared
+  touch/audio I2C bus moved to it too; `espressif/button`'s real entry
+  point is `iot_button_new_gpio_device()`) — see
+  `docs/HARDWARE_REFERENCE.md`.

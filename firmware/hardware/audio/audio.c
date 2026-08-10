@@ -48,17 +48,14 @@ static void i2s_init(void)
     ESP_ERROR_CHECK(i2s_channel_enable(s_rx_chan));
 }
 
-/* Thin wrapper around the espressif/es8311 managed component. Two things
- * are unverified here and must be checked on first build against real
- * hardware (see docs/HARDWARE_REFERENCE.md):
- *   1. Whether the resolved component version's es8311_create() takes the
- *      new i2c_master_bus_handle_t (used here, since the codec shares the
- *      new-driver I2C bus with hardware/touch) or the legacy i2c_port_t.
- *      If it's the legacy driver, the codec cannot share this bus as-is.
- *   2. The exact enum/function names below (ES8311_ADDRRES_0 and friends). */
+/* Thin wrapper around the espressif/es8311 managed component (verified
+ * against the resolved 1.0.0~1: es8311_create() takes the legacy
+ * i2c_port_t, which is why hardware/i2c_bus and hardware/touch use the
+ * legacy driver/i2c.h too - see board_config.h and
+ * docs/HARDWARE_REFERENCE.md. */
 static bool codec_init(void)
 {
-    es8311_handle_t codec = es8311_create(i2c_bus_get_handle(), ES8311_ADDRRES_0);
+    es8311_handle_t codec = es8311_create(i2c_bus_get_port(), ES8311_ADDRRES_0);
     if (codec == NULL) {
         ESP_LOGE(TAG, "es8311_create failed");
         return false;

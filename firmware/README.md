@@ -5,45 +5,81 @@ ESP-IDF firmware for the Waveshare ESP32-S3-Touch-AMOLED-1.32, targeting the
 display, touch, Wi-Fi, speaker, microphone, buttons, USB. Pairing with Home
 Assistant, the Helios UI, OTA, and diagnostics come in later versions.
 
-## Status: V0.1, unbuilt
+## Status: V0.1, builds clean — not yet flashed to hardware
 
-This has been written against Waveshare's own official example firmware for
-this exact board (pin mapping, panel init sequence, I2S/audio pinout — see
-[`docs/HARDWARE_REFERENCE.md`](../docs/HARDWARE_REFERENCE.md) for
-provenance) but has **not yet been compiled or flashed** — no ESP-IDF
-toolchain was available in the environment this was written in. Treat the
-first `idf.py build` as part of finishing V0.1, not a formality. Known open
-risks are called out in `docs/HARDWARE_REFERENCE.md` and in code comments
-(search for "verify" / "unverified"), the main ones being:
+Builds with **zero errors and zero warnings** against ESP-IDF 5.5.1
+(`idf.py set-target esp32s3 && idf.py build`, verified with the actual
+resolved managed-component versions: `lvgl/lvgl 9.5.0`,
+`espressif/esp_lcd_sh8601 2.0.1~1`, `espressif/button 4.2.0`,
+`espressif/es8311 1.0.0~1`). Output binary: 1.34 MB, 78% of the app
+partition free. Not yet flashed or run on real hardware — that's the next
+step once the board is in hand (see "Day-of checklist" below).
 
-- The `espressif/es8311` codec API surface (`firmware/hardware/audio`).
-- Whether that API takes the new `i2c_master_bus_handle_t` (used here, to
-  share the bus with touch) or the legacy `i2c_port_t`.
-- The `espressif/button` API surface (`firmware/hardware/buttons`).
-- Exact LVGL v9.x image/animation symbol names (`firmware/ui/animations`).
-- The CO5300 init command sequence, ported from the SH8601-compatible driver
-  Waveshare's own firmware uses (`firmware/hardware/display`).
+Two of the API-surface risks flagged during the initial skeleton write
+turned out to be real and are now fixed in code:
+
+- **`espressif/es8311` uses the legacy `driver/i2c.h` API**
+  (`es8311_create(i2c_port_t, uint16_t)`), not the new
+  `i2c_master_bus_handle_t`. Since the codec shares its I2C bus/pins with
+  the touch controller, `hardware/i2c_bus` and `hardware/touch` were
+  switched to the legacy driver too (a bus/port can only be owned by one
+  driver generation at a time). See `docs/HARDWARE_REFERENCE.md`.
+- **`espressif/button`'s real API** is `iot_button_new_gpio_device()` /
+  `iot_button_register_cb(handle, event, event_args, cb, usr_data)` — not
+  the `button_config_t.type/gpio_button_config` shape guessed originally.
+  `ES8311_ADDRRES_0` (the codec I2C address constant, typo and all) was a
+  correct guess.
+
+Remaining open item, still unverified because it needs the physical board:
+the CO5300 init command sequence (ported from the SH8601-compatible driver
+Waveshare's own firmware uses) compiles fine but its actual on-screen
+correctness can only be confirmed once the panel lights up.
+
+## Day-of checklist (board in hand)
+
+```sh
+source firmware/activate.sh     # sets up the ESP-IDF env (see below)
+cd firmware
+idf.py menuconfig               # under "Helios Mini", set a dev Wi-Fi
+                                 # SSID/password for bring-up
+idf.py -p <port> flash monitor
+```
+
+`idf.py build` has already been run and succeeds, so this should go
+straight to flashing. If `<port>` isn't obvious, `ls /dev/tty.usb*` (macOS)
+after plugging in the board over USB-C.
 
 ## Requirements
 
-- ESP-IDF **5.5.1** (matches Waveshare's own reference for this board)
+- ESP-IDF **5.5.1**, cloned at `~/esp/esp-idf` — matches Waveshare's own
+  reference for this board:
+  ```sh
+  mkdir -p ~/esp && cd ~/esp
+  git clone -b v5.5.1 --recursive --depth 1 --shallow-submodules \
+      https://github.com/espressif/esp-idf.git
+  cd esp-idf && ./install.sh esp32s3
+  ```
+- `cmake`, `ninja`, `dfu-util` — `brew install cmake ninja dfu-util`
+  (ESP-IDF's own installer does not bundle these on macOS)
 - Target: `esp32s3`
 - Python 3, as required by ESP-IDF's own `install.sh`
+
+All of the above is already done in this environment; `source
+firmware/activate.sh` is enough to pick it back up.
 
 ## Build
 
 ```sh
-. $IDF_PATH/export.sh
+source firmware/activate.sh
 cd firmware
-idf.py set-target esp32s3
-idf.py menuconfig   # under "Helios Mini", set a dev Wi-Fi SSID/password
-                     # for bring-up (real provisioning is V0.2)
+idf.py set-target esp32s3   # already done; re-running is a no-op
 idf.py build
 idf.py -p <port> flash monitor
 ```
 
-The component manager will fetch `lvgl/lvgl` (^9), `espressif/esp_lcd_sh8601`,
-`espressif/button`, and `espressif/es8311` on first build.
+The component manager fetches `lvgl/lvgl` (^9), `espressif/esp_lcd_sh8601`,
+`espressif/button`, and `espressif/es8311` automatically (already cached in
+`managed_components/`, not committed to git — see `.gitignore`).
 
 ## Layout
 

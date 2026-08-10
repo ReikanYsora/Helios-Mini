@@ -13,8 +13,6 @@
 #define CST820_REG_GESTURE  0x02
 #define CST820_REG_POSITION 0x03
 
-static i2c_master_dev_handle_t s_touch_dev = NULL;
-
 static void touch_reset(void)
 {
     gpio_set_level(HELIOS_PIN_TOUCH_RST, 1);
@@ -45,13 +43,6 @@ void touch_init(void)
     };
     ESP_ERROR_CHECK(gpio_config(&int_cfg));
 
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = HELIOS_TOUCH_I2C_ADDR,
-        .scl_speed_hz = 300000,
-    };
-    ESP_ERROR_CHECK(i2c_master_bus_add_device(i2c_bus_get_handle(), &dev_cfg, &s_touch_dev));
-
     touch_reset();
 }
 
@@ -62,7 +53,8 @@ bool touch_read(uint16_t *x, uint16_t *y)
     uint8_t pos[4] = {0};
 
     reg = CST820_REG_GESTURE;
-    if (i2c_master_transmit_receive(s_touch_dev, &reg, 1, gesture, sizeof(gesture), pdMS_TO_TICKS(50)) != ESP_OK) {
+    if (i2c_master_write_read_device(i2c_bus_get_port(), HELIOS_TOUCH_I2C_ADDR, &reg, 1,
+                                      gesture, sizeof(gesture), pdMS_TO_TICKS(50)) != ESP_OK) {
         return false;
     }
 
@@ -73,7 +65,8 @@ bool touch_read(uint16_t *x, uint16_t *y)
     }
 
     reg = CST820_REG_POSITION;
-    if (i2c_master_transmit_receive(s_touch_dev, &reg, 1, pos, sizeof(pos), pdMS_TO_TICKS(50)) != ESP_OK) {
+    if (i2c_master_write_read_device(i2c_bus_get_port(), HELIOS_TOUCH_I2C_ADDR, &reg, 1,
+                                      pos, sizeof(pos), pdMS_TO_TICKS(50)) != ESP_OK) {
         return false;
     }
 

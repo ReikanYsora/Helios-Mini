@@ -1,7 +1,7 @@
 #pragma once
 
 /* Single source of truth for the Waveshare ESP32-S3-Touch-AMOLED-1.32 pin
- * mapping used by every hardware/* component. Values are sourced from
+ * mapping used by every hardware component. Values are sourced from
  * Waveshare's own official example firmware, not the product docs (which
  * don't list pins) - see docs/HARDWARE_REFERENCE.md for provenance and open
  * questions, and revalidate against the exact production revision before
@@ -9,7 +9,14 @@
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
-#include "driver/i2c_master.h"
+#include "driver/i2c.h"
+
+/* The shared I2C bus (below) uses the legacy driver/i2c.h API rather than
+ * the new driver/i2c_master.h: the espressif/es8311 codec component only
+ * supports the legacy driver (i2c_master_write_to_device() internally), and
+ * a bus/port can only be owned by one driver generation at a time - so
+ * hardware/touch uses the legacy API too, to share the port. See
+ * docs/HARDWARE_REFERENCE.md. */
 
 /* ---- Display (QSPI, CO5300 panel via SH8601-compatible driver) ---- */
 #define HELIOS_LCD_HOST         SPI2_HOST

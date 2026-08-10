@@ -2,9 +2,10 @@
 firmware/build/
 firmware/**/build/
 firmware/managed_components/
-firmware/dependencies.lock
 firmware/sdkconfig
 firmware/sdkconfig.old
+# firmware/dependencies.lock is intentionally committed - it pins the exact
+# managed-component versions verified to build clean (see firmware/README.md).
 *.bin
 *.elf
 *.map
