@@ -10,16 +10,17 @@ It's the little sibling of [Helios](https://github.com/ReikanYsora/Helios), the 
 
 ## Status
 
-**V0.1 — Hardware Bring-Up, builds clean, not yet flashed.** Firmware for
+**V0.1 — Hardware Bring-Up, running on real hardware.** Firmware for
 display, touch, Wi-Fi, buttons, and audio is written in
 [`firmware/`](firmware/), ported from Waveshare's own reference firmware for
 this exact board, plus the Wi-Fi setup slice of V0.2 (SoftAP + browser
-setup page, spec Section 16) ahead of schedule. Compiles with zero
-errors/warnings against ESP-IDF 5.5.1. Board arrives soon — first
-flash/monitor is next. See [`firmware/README.md`](firmware/README.md) for
-the day-of checklist, [`docs/SPEC.md`](docs/SPEC.md) for the full product
+setup page, spec Section 16) ahead of schedule. Flashed and verified on the
+actual board: boots, serves its own `HELIOS-MINI-XXXX` Wi-Fi setup network,
+and connects to a home network end-to-end from a phone with no app or
+dev tools. See [`firmware/README.md`](firmware/README.md) for flash/monitor
+instructions, [`docs/SPEC.md`](docs/SPEC.md) for the full product
 specification, and [`docs/HARDWARE_REFERENCE.md`](docs/HARDWARE_REFERENCE.md)
-for the verified pin mapping and build notes.
+for the verified pin mapping and hardware bring-up notes.
 
 ## Hardware
 

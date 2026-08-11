@@ -8,7 +8,7 @@ SoftAP + browser setup page, no more hardcoded dev credentials required.
 Home Assistant pairing, the Helios UI, OTA, and diagnostics come in later
 versions.
 
-## Status: builds clean, first flash crashed and was fixed — reflash needed
+## Status: running on hardware, Wi-Fi setup verified end-to-end
 
 Builds with **zero errors and zero warnings** against ESP-IDF 5.5.1
 (`idf.py set-target esp32s3 && idf.py build`, verified with the actual
@@ -16,12 +16,22 @@ resolved managed-component versions: `lvgl/lvgl 9.5.0`,
 `espressif/esp_lcd_sh8601 2.0.1~1`, `espressif/button 4.2.0`,
 `espressif/es8311 1.0.0~1`).
 
-First real flash hit a task-watchdog crash loop: `boot_animation_start()`
-was touching LVGL from the `main` task without the display component's
-lock, racing the `lvgl` task's own `lv_timer_handler()` loop and corrupting
-LVGL's internal state. Fixed (see `docs/HARDWARE_REFERENCE.md` for the
-full root cause) — **not yet re-flashed to confirm.** Reflash is the
-immediate next step.
+Two crashes were hit and fixed on the very first hardware runs (both are
+now confirmed fixed on real hardware — full root cause and fixes in
+`docs/HARDWARE_REFERENCE.md`):
+
+1. A task-watchdog crash loop: `boot_animation_start()` touched LVGL from
+   the `main` task without the display component's lock, racing the
+   `lvgl` task's own `lv_timer_handler()` loop.
+2. A stack overflow in the `httpd` task the moment a phone actually
+   connected to the setup portal: the Wi-Fi scan-results buffer was too
+   large for the default 4KB task stack.
+
+After both fixes, a full live run succeeded: a phone joined the
+`HELIOS-MINI-XXXX` AP, loaded the setup page, submitted real Wi-Fi
+credentials, and the device saved them, rebooted, connected in station
+mode, and got a DHCP lease — the complete Wi-Fi setup flow, working
+end-to-end on hardware.
 
 ### Wi-Fi setup flow (implemented)
 
@@ -62,7 +72,7 @@ the CO5300 init command sequence (ported from the SH8601-compatible driver
 Waveshare's own firmware uses) compiles fine but its actual on-screen
 correctness can only be confirmed once the panel lights up.
 
-## Day-of checklist (board in hand)
+## Flash / monitor
 
 ```sh
 source firmware/activate.sh     # sets up the ESP-IDF env (see below)
@@ -70,9 +80,15 @@ cd firmware
 idf.py -p <port> flash monitor
 ```
 
-`idf.py build` has already been run and succeeds, so this should go
-straight to flashing. If `<port>` isn't obvious, `ls /dev/tty.usb*` (macOS)
-after plugging in the board over USB-C.
+If `<port>` isn't obvious, `ls /dev/tty.usb*` (macOS) after plugging in the
+board over USB-C — on this board it shows up as a native USB CDC device
+(`/dev/tty.usbmodemXXX`), no separate VCP driver needed.
+
+`idf.py monitor` needs a real interactive terminal (it errors with "Monitor
+requires standard input to be attached to TTY" if stdin isn't one — e.g.
+when run through automation/an agent's tool sandbox rather than a normal
+terminal). In that situation, capture the serial log directly with pyserial
+instead: open `/dev/tty.usbmodemXXX` at 115200 baud and read.
 
 No `menuconfig` step needed anymore — on first boot the device starts its
 own setup network. Join **`HELIOS-MINI-XXXX`** from a phone, browse to

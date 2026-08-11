@@ -133,10 +133,20 @@ static void html_escape(const char *src, char *dst, size_t dst_size)
 
 /* ---- HTTP handlers ---- */
 
+#define PROVISIONING_MAX_SCAN_RESULTS 20
+
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
-    wifi_ap_record_t aps[20];
-    uint16_t ap_count = sizeof(aps) / sizeof(aps[0]);
+    /* wifi_ap_record_t is large enough (~1.9KB for 20 of them) that keeping
+     * it on the httpd task's stack overflowed the default 4KB stack the
+     * moment a client actually connected - see docs/HARDWARE_REFERENCE.md.
+     * Heap-allocated instead, on top of also bumping stack_size below. */
+    wifi_ap_record_t *aps = calloc(PROVISIONING_MAX_SCAN_RESULTS, sizeof(wifi_ap_record_t));
+    if (aps == NULL) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    uint16_t ap_count = PROVISIONING_MAX_SCAN_RESULTS;
     wifi_scan_config_t scan_cfg = {0};
 
     /* Blocking active scan on the STA side of APSTA mode; the AP keeps
@@ -179,6 +189,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "<button type='submit'>Connect</button>"
         "</form></body></html>");
     httpd_resp_sendstr_chunk(req, NULL);
+    free(aps);
     return ESP_OK;
 }
 
@@ -271,6 +282,10 @@ void provisioning_start_portal(void)
 
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
     http_cfg.max_uri_handlers = 4;
+    /* Default 4KB overflowed in practice once a client actually connected
+     * (see docs/HARDWARE_REFERENCE.md) - the handlers' own buffers plus the
+     * server's internal request/header parsing need more room. */
+    http_cfg.stack_size = 8192;
     httpd_handle_t server = NULL;
     ESP_ERROR_CHECK(httpd_start(&server, &http_cfg));
 

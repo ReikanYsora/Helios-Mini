@@ -43,3 +43,19 @@ All notable changes to Helios Mini will be documented in this file.
   lock, racing `hardware/display`'s own `lvgl` task and corrupting LVGL's
   internal state (hung inside `lv_inv_area`). Wrapped in
   `display_lock()`/`display_unlock()`. See `docs/HARDWARE_REFERENCE.md`.
+- Stack overflow in the `httpd` task, hit as soon as a phone actually
+  connected to the setup portal: the Wi-Fi scan-results buffer
+  (`wifi_ap_record_t aps[20]`, ~1.9KB) plus HTML-rendering buffers lived on
+  the stack against the server's default 4KB task stack. Heap-allocated the
+  scan buffer and bumped `httpd_config_t.stack_size` to 8192.
+
+### Verified on hardware (2026-08-11)
+
+First flash on the real board (both crashes above hit and fixed along the
+way). After fixing them, a full live run succeeded end-to-end: booted,
+started the `HELIOS-MINI-XXXX` setup AP, a phone joined it, loaded the
+setup page (network scan included), submitted real Wi-Fi credentials,
+the device saved them to NVS, rebooted, connected in station mode, and
+got a DHCP lease on the target network. V0.1 hardware bring-up + the V0.2
+Wi-Fi-provisioning slice are now confirmed working, not just compiling.
+See `docs/HARDWARE_REFERENCE.md`.

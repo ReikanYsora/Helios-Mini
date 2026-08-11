@@ -159,7 +159,21 @@ its whole body in `display_lock(0)`/`display_unlock()` (the animation
 callbacks themselves - `dot_grow_cb`, `arc_sweep_cb`, `arc_sweep_done_cb`,
 `logo_fade_cb` - don't need their own lock, since LVGL invokes them from
 inside `lv_timer_handler()`, i.e. already inside the `lvgl` task's lock).
-Not yet re-flashed to confirm on hardware.
+Confirmed fixed on reflash: boot animation runs, no crash.
+
+Second crash, hit as soon as a phone actually joined the setup AP and the
+`httpd` task did real work: `A stack overflow in task httpd has been
+detected`. Cause: `root_get_handler()` kept a `wifi_ap_record_t aps[20]`
+(~1.9KB) plus HTML-rendering buffers (~700B) on the stack, against
+`esp_http_server`'s default 4KB task stack - not enough headroom once the
+server's own request/header parsing is added on top. Fixed by
+heap-allocating the scan-results array (`calloc`/`free`) and bumping
+`httpd_config_t.stack_size` to 8192. Confirmed fixed: a phone connected to
+the AP, loaded the setup page (network scan included), submitted real
+credentials (`TITEFAMILLE`), and the device saved them, rebooted, and
+connected in station mode — full round trip, no crash, got a real DHCP
+lease (`192.168.0.45`) on the target network. This is the first fully
+successful end-to-end run of V0.1 + the V0.2 Wi-Fi-provisioning slice.
 
 ## Still open (need the physical board)
 
