@@ -8,15 +8,20 @@ SoftAP + browser setup page, no more hardcoded dev credentials required.
 Home Assistant pairing, the Helios UI, OTA, and diagnostics come in later
 versions.
 
-## Status: builds clean — not yet flashed to hardware
+## Status: builds clean, first flash crashed and was fixed — reflash needed
 
 Builds with **zero errors and zero warnings** against ESP-IDF 5.5.1
 (`idf.py set-target esp32s3 && idf.py build`, verified with the actual
 resolved managed-component versions: `lvgl/lvgl 9.5.0`,
 `espressif/esp_lcd_sh8601 2.0.1~1`, `espressif/button 4.2.0`,
-`espressif/es8311 1.0.0~1`). Output binary: 1.37 MB, 78% of the app
-partition free. Not yet flashed or run on real hardware — that's the next
-step once the board is in hand (see "Day-of checklist" below).
+`espressif/es8311 1.0.0~1`).
+
+First real flash hit a task-watchdog crash loop: `boot_animation_start()`
+was touching LVGL from the `main` task without the display component's
+lock, racing the `lvgl` task's own `lv_timer_handler()` loop and corrupting
+LVGL's internal state. Fixed (see `docs/HARDWARE_REFERENCE.md` for the
+full root cause) — **not yet re-flashed to confirm.** Reflash is the
+immediate next step.
 
 ### Wi-Fi setup flow (implemented)
 

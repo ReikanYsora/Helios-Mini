@@ -1,8 +1,5 @@
-/* LVGL v9 API surface used here (lv_image_*, LV_IMAGE_DECLARE) has not been
- * compiled against yet in this repo - verify exact symbol names against the
- * resolved lvgl/lvgl component version on first build. See
- * docs/HARDWARE_REFERENCE.md. */
 #include "boot_animation.h"
+#include "display.h"
 #include "lvgl.h"
 
 LV_IMAGE_DECLARE(helios_logo);
@@ -54,6 +51,16 @@ static void arc_sweep_done_cb(lv_anim_t *anim)
 
 void boot_animation_start(void)
 {
+    /* Mandatory: this runs on the "main" task, while the display component's
+     * own "lvgl" task is concurrently looping lv_timer_handler() in the
+     * background. LVGL is not thread-safe - without this lock, the two
+     * tasks mutate the object tree/invalidated-area bookkeeping at the same
+     * time, which corrupts it and hangs (observed as a task watchdog
+     * timeout inside lv_inv_area on real hardware). See display.h. */
+    if (!display_lock(0)) {
+        return;
+    }
+
     lv_obj_t *scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
@@ -106,4 +113,6 @@ void boot_animation_start(void)
     /* Total: ~300ms dot + 300ms delay + 900ms sweep + 400ms fade =~ 1.9s,
      * comfortably under the <3s target (spec Section 15) excluding network
      * time, leaving headroom for the Wi-Fi/HA status steps in V0.2. */
+
+    display_unlock();
 }

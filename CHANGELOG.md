@@ -35,3 +35,11 @@ All notable changes to Helios Mini will be documented in this file.
   reboots into station mode. Holding BOOT at power-on forces re-entry into
   setup. Home Assistant discovery/pairing (spec Sections 17-18) is still
   unstarted V0.2 scope.
+
+### Fixed
+
+- Task-watchdog crash loop on first real hardware flash: `boot_animation_start()`
+  called LVGL directly from the `main` task without the display component's
+  lock, racing `hardware/display`'s own `lvgl` task and corrupting LVGL's
+  internal state (hung inside `lv_inv_area`). Wrapped in
+  `display_lock()`/`display_unlock()`. See `docs/HARDWARE_REFERENCE.md`.

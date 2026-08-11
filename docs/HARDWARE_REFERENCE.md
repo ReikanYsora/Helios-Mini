@@ -142,6 +142,25 @@ device with no other sensitive state yet. Revisit before commercial
 shipment: a per-unit default password (printed on the device/box) would be
 a low-cost hardening step once V0.4 packaging/production is in scope (spec
 Section 23).
+
+## First hardware boot (2026-08-11)
+
+First real flash hit a task watchdog timeout / crash loop, backtrace
+bottoming out in `lv_inv_area` called from `boot_animation_start()`. Root
+cause: `boot_animation_start()` called `lv_obj_*`/`lv_anim_*` directly from
+the `main` task without taking the LVGL lock, while `hardware/display`'s own
+`lvgl` task was concurrently running `lv_timer_handler()` in a loop. LVGL is
+not thread-safe - two tasks mutating the object tree/invalidated-area
+bookkeeping at the same time corrupted it, which showed up as an infinite
+loop inside `lv_inv_area` and tripped the watchdog. `networking/provisioning`
+already followed the `display_lock()`/`display_unlock()` contract from
+`display.h` correctly; `boot_animation_start()` didn't. Fixed by wrapping
+its whole body in `display_lock(0)`/`display_unlock()` (the animation
+callbacks themselves - `dot_grow_cb`, `arc_sweep_cb`, `arc_sweep_done_cb`,
+`logo_fade_cb` - don't need their own lock, since LVGL invokes them from
+inside `lv_timer_handler()`, i.e. already inside the `lvgl` task's lock).
+Not yet re-flashed to confirm on hardware.
+
 ## Still open (need the physical board)
 
 - [ ] Confirm the CO5300 init command sequence actually produces a correct
