@@ -33,8 +33,23 @@ All notable changes to Helios Mini will be documented in this file.
   where the user scans/picks a Wi-Fi network and enters its password, no
   app or JavaScript required. Credentials are saved to NVS and the device
   reboots into station mode. Holding BOOT at power-on forces re-entry into
-  setup. Home Assistant discovery/pairing (spec Sections 17-18) is still
-  unstarted V0.2 scope.
+  setup.
+- Persistent on-screen network status (`ui/animations/network_status.c`):
+  once station mode gets an IP, the screen shows "Helios Mini /
+  `http://<ip>/`" and keeps it current across reconnects, via a new
+  `wifi_sta_set_connected_cb()`.
+- Home Assistant settings server (`networking/settings_server`), replacing
+  the discovery/pairing flow originally sketched in spec Sections 17-18: a
+  small HTTP server on the station IP where the user pastes an HA base URL
+  and a Long-Lived Access Token, saved to NVS. Only captures the settings
+  so far - a WebSocket client that uses them to pull energy data doesn't
+  exist yet.
+- `networking/http_forms`: shared URL-decode/form-parsing/HTML-escape
+  helpers, factored out of `provisioning` and reused by `settings_server`.
+- Startup chime (`hardware/audio`'s `audio_play_startup_tone()`): a
+  synthesized tone with a fade envelope, written straight to the I2S TX
+  channel - no audio asset needed - to confirm the speaker path works.
+- Doubled the boot logo (220px -> 440px).
 
 ### Fixed
 
@@ -48,6 +63,9 @@ All notable changes to Helios Mini will be documented in this file.
   (`wifi_ap_record_t aps[20]`, ~1.9KB) plus HTML-rendering buffers lived on
   the stack against the server's default 4KB task stack. Heap-allocated the
   scan buffer and bumped `httpd_config_t.stack_size` to 8192.
+- Panel was upside down: `hardware/display` never sent a MADCTL (0x36)
+  orientation command. Added `MADCTL = 0xC0`, matching Waveshare's own
+  factory firmware for this board.
 
 ### Verified on hardware (2026-08-11)
 

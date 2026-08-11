@@ -11,3 +11,9 @@
 bool audio_init(void);
 
 void audio_pa_enable(bool enable);
+
+/* Plays a short synthesized chime (no audio asset needed) to confirm the
+ * speaker path works. Enables the PA for the duration and disables it
+ * afterwards. Blocks for roughly STARTUP_TONE_MS. audio_init() must have
+ * succeeded first. */
+void audio_play_startup_tone(void);

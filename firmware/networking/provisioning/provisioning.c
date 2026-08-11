@@ -2,6 +2,7 @@
 #include "board_config.h"
 #include "storage.h"
 #include "display.h"
+#include "http_forms.h"
 
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -24,6 +25,7 @@ static const char *NVS_NAMESPACE = "helios_mini";
 #define PROVISIONING_AP_IP        "192.168.4.1"
 #define PROVISIONING_MAX_FORM_LEN 512
 #define PROVISIONING_REBOOT_DELAY_US (1500 * 1000)
+#define PROVISIONING_MAX_SCAN_RESULTS 20
 
 bool provisioning_has_credentials(void)
 {
@@ -66,74 +68,7 @@ static void show_setup_screen(const char *ap_ssid)
     display_unlock();
 }
 
-/* ---- tiny x-www-form-urlencoded helpers (no JS/client-side dependency) ---- */
-
-static void url_decode(char *dst, const char *src)
-{
-    while (*src) {
-        if (*src == '%' && src[1] && src[2]) {
-            char hex[3] = { src[1], src[2], 0 };
-            *dst++ = (char)strtol(hex, NULL, 16);
-            src += 3;
-        } else if (*src == '+') {
-            *dst++ = ' ';
-            src++;
-        } else {
-            *dst++ = *src++;
-        }
-    }
-    *dst = '\0';
-}
-
-/* Writes the decoded value of `key` from a form body into `out` (empty
- * string if absent). `body` must be null-terminated. */
-static void form_get(const char *body, const char *key, char *out, size_t out_size)
-{
-    out[0] = '\0';
-    size_t key_len = strlen(key);
-    const char *p = body;
-    while (p) {
-        if (strncmp(p, key, key_len) == 0 && p[key_len] == '=') {
-            const char *val = p + key_len + 1;
-            const char *end = strchr(val, '&');
-            size_t len = end ? (size_t)(end - val) : strlen(val);
-            char raw[PROVISIONING_MAX_FORM_LEN];
-            if (len >= sizeof(raw)) {
-                len = sizeof(raw) - 1;
-            }
-            memcpy(raw, val, len);
-            raw[len] = '\0';
-            url_decode(out, raw);
-            if (strlen(out) >= out_size) {
-                out[out_size - 1] = '\0';
-            }
-            return;
-        }
-        p = strchr(p, '&');
-        if (p) {
-            p++;
-        }
-    }
-}
-
-static void html_escape(const char *src, char *dst, size_t dst_size)
-{
-    size_t di = 0;
-    for (size_t si = 0; src[si] != '\0' && di + 6 < dst_size; si++) {
-        char c = src[si];
-        if (c == '&')      { memcpy(&dst[di], "&amp;", 5); di += 5; }
-        else if (c == '<') { memcpy(&dst[di], "&lt;", 4); di += 4; }
-        else if (c == '>') { memcpy(&dst[di], "&gt;", 4); di += 4; }
-        else if (c == '"') { memcpy(&dst[di], "&quot;", 6); di += 6; }
-        else if (c == '\'') { memcpy(&dst[di], "&#39;", 5); di += 5; }
-        else { dst[di++] = c; }
-    }
-    dst[di] = '\0';
-}
-
 /* ---- HTTP handlers ---- */
-
-#define PROVISIONING_MAX_SCAN_RESULTS 20
 
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
@@ -174,7 +109,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     char escaped[200];
     char chunk[512];
     for (int i = 0; i < ap_count; i++) {
-        html_escape((const char *)aps[i].ssid, escaped, sizeof(escaped));
+        http_form_html_escape((const char *)aps[i].ssid, escaped, sizeof(escaped));
         snprintf(chunk, sizeof(chunk), "<option value='%s'>%s (%d dBm)</option>",
                  escaped, escaped, aps[i].rssi);
         httpd_resp_sendstr_chunk(req, chunk);
@@ -216,9 +151,9 @@ static esp_err_t connect_post_handler(httpd_req_t *req)
     char ssid[33] = {0};
     char ssid_manual[33] = {0};
     char password[65] = {0};
-    form_get(body, "ssid", ssid, sizeof(ssid));
-    form_get(body, "ssid_manual", ssid_manual, sizeof(ssid_manual));
-    form_get(body, "password", password, sizeof(password));
+    http_form_get(body, "ssid", ssid, sizeof(ssid));
+    http_form_get(body, "ssid_manual", ssid_manual, sizeof(ssid_manual));
+    http_form_get(body, "password", password, sizeof(password));
 
     const char *final_ssid = ssid_manual[0] != '\0' ? ssid_manual : ssid;
     if (final_ssid[0] == '\0') {
@@ -231,7 +166,7 @@ static esp_err_t connect_post_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "credentials saved for '%s', rebooting into station mode", final_ssid);
 
     char escaped_ssid[200];
-    html_escape(final_ssid, escaped_ssid, sizeof(escaped_ssid));
+    http_form_html_escape(final_ssid, escaped_ssid, sizeof(escaped_ssid));
     char resp[640];
     snprintf(resp, sizeof(resp),
         "<!doctype html><html><body style='font-family:sans-serif;text-align:center;margin-top:3em;"

@@ -15,6 +15,8 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/hardware/audio"
     "${CMAKE_CURRENT_LIST_DIR}/networking/wifi"
     "${CMAKE_CURRENT_LIST_DIR}/networking/provisioning"
+    "${CMAKE_CURRENT_LIST_DIR}/networking/settings_server"
+    "${CMAKE_CURRENT_LIST_DIR}/networking/http_forms"
     "${CMAKE_CURRENT_LIST_DIR}/storage"
     "${CMAKE_CURRENT_LIST_DIR}/diagnostics"
     "${CMAKE_CURRENT_LIST_DIR}/ui/animations"

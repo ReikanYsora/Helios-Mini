@@ -17,9 +17,12 @@ this exact board, plus the Wi-Fi setup slice of V0.2 (SoftAP + browser
 setup page, spec Section 16) ahead of schedule. Flashed and verified on the
 actual board: boots, serves its own `HELIOS-MINI-XXXX` Wi-Fi setup network,
 and connects to a home network end-to-end from a phone with no app or
-dev tools. See [`firmware/README.md`](firmware/README.md) for flash/monitor
-instructions, [`docs/SPEC.md`](docs/SPEC.md) for the full product
-specification, and [`docs/HARDWARE_REFERENCE.md`](docs/HARDWARE_REFERENCE.md)
+dev tools — once connected, the device shows its own IP permanently on
+screen, reachable from a browser for Home Assistant settings (a URL + a
+Long-Lived Access Token instead of the discovery/pairing flow originally
+sketched in the spec). See [`firmware/README.md`](firmware/README.md) for
+flash/monitor instructions, [`docs/SPEC.md`](docs/SPEC.md) for the full
+product specification, and [`docs/HARDWARE_REFERENCE.md`](docs/HARDWARE_REFERENCE.md)
 for the verified pin mapping and hardware bring-up notes.
 
 ## Hardware

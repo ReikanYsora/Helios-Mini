@@ -95,6 +95,17 @@ static void panel_init(void)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
 
+    /* MADCTL (0x36) = 0xC0 (MY=1, MX=1): rotates the image 180 degrees from
+     * the panel's raw default. The panel showed upside down without this on
+     * real hardware - this exact value is what Waveshare's own factory
+     * firmware sends for this board too, so it should also keep touch
+     * mirroring (hardware/display's touch_read_cb) consistent with what it
+     * was ported from. See docs/HARDWARE_REFERENCE.md. */
+    uint32_t madctl_cmd = 0x36;
+    madctl_cmd = (madctl_cmd << 8) | (0x02u << 24);
+    uint8_t madctl_param = 0xC0;
+    esp_lcd_panel_io_tx_param(s_io, madctl_cmd, &madctl_param, 1);
+
     display_set_brightness(0xFF);
 }
 

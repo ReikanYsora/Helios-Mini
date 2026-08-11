@@ -8,12 +8,20 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include <string.h>
+#include <stdio.h>
 
 static const char *TAG = "wifi_sta";
 static const char *NVS_NAMESPACE = "helios_mini";
 
 static EventGroupHandle_t s_wifi_events;
 #define WIFI_CONNECTED_BIT BIT0
+
+static wifi_sta_connected_cb_t s_connected_cb = NULL;
+
+void wifi_sta_set_connected_cb(wifi_sta_connected_cb_t cb)
+{
+    s_connected_cb = cb;
+}
 
 static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -25,8 +33,13 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)data;
-        ESP_LOGI(TAG, "connected, ip=" IPSTR, IP2STR(&event->ip_info.ip));
+        char ip_str[16];
+        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "connected, ip=%s", ip_str);
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
+        if (s_connected_cb) {
+            s_connected_cb(ip_str);
+        }
     }
 }
 
@@ -37,8 +50,9 @@ static void load_credentials(wifi_config_t *cfg)
     bool have_ssid = storage_get_string(NVS_NAMESPACE, "wifi_ssid", ssid, sizeof(ssid)) == ESP_OK;
 
     if (!have_ssid) {
-        ESP_LOGW(TAG, "no stored Wi-Fi credentials (provisioning is V0.2 scope); "
-                      "falling back to CONFIG_HELIOS_WIFI_DEV_SSID for bring-up");
+        /* main.c only calls wifi_sta_start() once provisioning_has_credentials()
+         * is true, so this is a defensive fallback, not the normal path. */
+        ESP_LOGW(TAG, "no stored Wi-Fi credentials; falling back to CONFIG_HELIOS_WIFI_DEV_SSID");
         strncpy(ssid, CONFIG_HELIOS_WIFI_DEV_SSID, sizeof(ssid) - 1);
         strncpy(pass, CONFIG_HELIOS_WIFI_DEV_PASSWORD, sizeof(pass) - 1);
     } else {

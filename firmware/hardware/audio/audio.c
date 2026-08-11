@@ -7,12 +7,24 @@
 #include "es8311.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include <stdlib.h>
+#include <math.h>
 
 static const char *TAG = "audio";
 static i2s_chan_handle_t s_tx_chan = NULL;
 static i2s_chan_handle_t s_rx_chan = NULL;
 
 #define HELIOS_AUDIO_SAMPLE_RATE_HZ 16000
+
+/* Startup chime: verifies the speaker path end-to-end without needing an
+ * audio asset - a short tone with a fade-in/out envelope (no clicks). */
+#define STARTUP_TONE_FREQ_HZ   880
+#define STARTUP_TONE_MS        180
+#define STARTUP_TONE_AMPLITUDE 6000  /* well under INT16_MAX, avoids clipping */
+#define STARTUP_TONE_TWO_PI    6.283185307f
 
 void audio_pa_enable(bool enable)
 {
@@ -74,6 +86,7 @@ static bool codec_init(void)
     }
 
     es8311_voice_volume_set(codec, 70, NULL);
+    es8311_voice_mute(codec, false);
     es8311_microphone_config(codec, false);
     return true;
 }
@@ -82,4 +95,37 @@ bool audio_init(void)
 {
     i2s_init();
     return codec_init();
+}
+
+void audio_play_startup_tone(void)
+{
+    const int sample_rate = HELIOS_AUDIO_SAMPLE_RATE_HZ;
+    const int num_samples = sample_rate * STARTUP_TONE_MS / 1000;
+
+    int16_t *samples = malloc(num_samples * sizeof(int16_t));
+    if (samples == NULL) {
+        ESP_LOGW(TAG, "startup tone: allocation failed, skipping");
+        return;
+    }
+
+    for (int i = 0; i < num_samples; i++) {
+        float t = (float)i / (float)num_samples;
+        /* Linear fade-in/out over the first/last 10% to avoid a click. */
+        float envelope = (t < 0.1f) ? (t / 0.1f) : (t > 0.9f) ? ((1.0f - t) / 0.1f) : 1.0f;
+        float sample = STARTUP_TONE_AMPLITUDE * envelope *
+                       sinf(STARTUP_TONE_TWO_PI * STARTUP_TONE_FREQ_HZ * i / sample_rate);
+        samples[i] = (int16_t)sample;
+    }
+
+    audio_pa_enable(true);
+    size_t bytes_written = 0;
+    esp_err_t err = i2s_channel_write(s_tx_chan, samples, num_samples * sizeof(int16_t),
+                                       &bytes_written, pdMS_TO_TICKS(1000));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "startup tone: i2s_channel_write failed (%s)", esp_err_to_name(err));
+    }
+    vTaskDelay(pdMS_TO_TICKS(50)); /* let the amp settle before cutting power */
+    audio_pa_enable(false);
+
+    free(samples);
 }

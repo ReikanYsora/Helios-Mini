@@ -11,6 +11,7 @@ idf_component_register(
         audio
         wifi
         provisioning
+        settings_server
         storage
         diagnostics
         animations

@@ -175,20 +175,62 @@ connected in station mode — full round trip, no crash, got a real DHCP
 lease (`192.168.0.45`) on the target network. This is the first fully
 successful end-to-end run of V0.1 + the V0.2 Wi-Fi-provisioning slice.
 
-## Still open (need the physical board)
+## Display orientation, audio, and HA-settings changes (2026-08-11)
 
-- [ ] Confirm the CO5300 init command sequence actually produces a correct
-      image (ported from the vendor's SH8601-driver init array — compiles
-      fine, works in practice per the vendor's own shipped example, but not
-      independently verified against a CO5300 register reference or seen
-      on an actual panel yet).
+Feedback from looking at the flashed device on the desk:
+
+- **Panel was upside down.** `hardware/display`'s `panel_init()` never sent
+  a MADCTL (0x36) orientation command at all - the panel was just running
+  on its raw controller default. Waveshare's own factory firmware sends
+  `MADCTL = 0xC0` (MY=1, MX=1) for this exact board; added the same command.
+  Since `touch_read_cb`'s coordinate mirroring was ported from the same
+  vendor reference (which also sends `0xC0`), the two should now be
+  consistent with each other again rather than one being un-rotated. Touch
+  itself is still unverified either way (see below).
+- **Boot logo doubled** (220px -> 440px) via
+  `tools/asset-gen/svg_to_lvgl.py ... 440 ...`.
+- **Startup tone added** (`hardware/audio`'s `audio_play_startup_tone()`):
+  a synthesized 880Hz chime with a fade envelope, no audio asset needed,
+  written straight to the I2S TX channel. Confirms the speaker path
+  end-to-end. Not yet confirmed audible - needs eyes/ears on the device,
+  not just a clean serial log.
+- **Persistent on-screen IP** (`ui/animations/network_status.c`): once
+  station mode gets an IP, the screen switches to "Helios Mini /
+  `http://<ip>/`" and stays there - wired via a new `wifi_sta_set_connected_cb()`
+  so it also updates itself across reconnects/drops.
+- **Home Assistant discovery/pairing (spec Sections 17-18) dropped**, in
+  favor of a much simpler mechanism: `networking/settings_server` runs a
+  small HTTP server on the station IP (the same one now shown on screen)
+  where the user pastes an HA base URL and a Long-Lived Access Token,
+  saved to NVS. This only covers *capturing* the settings - a WebSocket
+  client that actually uses the token to pull energy data does not exist
+  yet, that's the next real chunk of work.
+- Extracted the URL-decode/form-parsing/HTML-escape helpers that
+  `networking/provisioning` had into a shared `networking/http_forms`
+  component, now used by both `provisioning` and `settings_server`, so the
+  stack-overflow-class bug above only has one place to be wrong in.
+
+Verified: builds clean, flashes, boots without crashing, reconnects to the
+already-provisioned network automatically, `settings_server` is reachable
+(a browser already hit it and got a normal 404 for `/favicon.ico`). Visual
+confirmation of the rotation fix and logo size, and audible confirmation of
+the startup tone, are pending - need the user looking at/listening to the
+actual device.
+
+## Still open (need eyes/ears on the physical board)
+
+- [ ] Confirm the panel now displays right-side up with `MADCTL = 0xC0`
+      (see above) and that the doubled boot logo looks right, not clipped
+      oddly by the circular bezel.
+- [ ] Confirm the startup tone is actually audible through the speaker.
 - [ ] Confirm `TE` (GPIO 9) is safe to leave unconnected in software for V0.1
       (tearing may be visible without it; acceptable for bring-up, revisit
       for V0.3 UI polish).
 - [ ] Confirm touch coordinate mirroring (`hardware/display`'s
-      `touch_read_cb`) is correct for this panel's actual mounting
-      orientation - ported from the vendor example but easy to get
-      backwards; verify by touching the four edges once flashed.
+      `touch_read_cb`) is correct now that `MADCTL` is set - ported from the
+      vendor example (which also uses `0xC0`) so it should already match,
+      but hasn't been touched yet to confirm; verify by touching the four
+      edges.
 - [ ] Confirm the power-latch behavior (GPIO 18) end-to-end in the
       USB-only configuration: does the board actually stay powered after
       the PWR button is released once V0.1 asserts the latch, exactly as

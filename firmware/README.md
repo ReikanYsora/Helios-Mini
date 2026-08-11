@@ -5,8 +5,15 @@ ESP-IDF firmware for the Waveshare ESP32-S3-Touch-AMOLED-1.32, targeting the
 display, touch, Wi-Fi, speaker, microphone, buttons, USB — plus, ahead of
 schedule, the Wi-Fi provisioning slice of **V0.2** (spec Section 16): a
 SoftAP + browser setup page, no more hardcoded dev credentials required.
-Home Assistant pairing, the Helios UI, OTA, and diagnostics come in later
-versions.
+
+**Home Assistant pairing deliberately does not follow spec Sections 17-18**
+(discovery + a dedicated custom integration). Instead, once connected to the
+home network, the device runs its own small settings server (reachable at
+the IP permanently shown on screen) where the user pastes an HA URL and a
+Long-Lived Access Token — simpler to build and to use, at the cost of one
+manual step (generating the token in HA) instead of a one-tap pairing
+button. See "Home Assistant settings" below. The Helios UI, OTA, and
+full diagnostics come in later versions.
 
 ## Status: running on hardware, Wi-Fi setup verified end-to-end
 
@@ -67,10 +74,21 @@ turned out to be real and are now fixed in code:
   `ES8311_ADDRRES_0` (the codec I2C address constant, typo and all) was a
   correct guess.
 
-Remaining open item, still unverified because it needs the physical board:
-the CO5300 init command sequence (ported from the SH8601-compatible driver
-Waveshare's own firmware uses) compiles fine but its actual on-screen
-correctness can only be confirmed once the panel lights up.
+Remaining open items, still unverified because they need eyes/ears on the
+physical device (not just a clean serial log) — see
+`docs/HARDWARE_REFERENCE.md`: the panel orientation fix, the doubled boot
+logo, the startup tone actually being audible, and touch.
+
+### Persistent on-screen IP + Home Assistant settings
+
+Once connected to the home network, the screen shows **"Helios Mini /
+`http://<device-ip>/`"** permanently (updates itself across reconnects).
+Browse to that address from any device on the same network to reach
+`networking/settings_server`: a form for the Home Assistant base URL and a
+Long-Lived Access Token (Profile → Security → Long-Lived Access Tokens in
+Home Assistant), saved to NVS. **This only saves the settings** — nothing
+yet reads them back and actually talks to Home Assistant (no WebSocket
+client, no energy data). That's the next piece of work.
 
 ## Flash / monitor
 
@@ -147,18 +165,20 @@ firmware/
 │   └── audio/              I2S + PA enable + ES8311
 ├── networking/
 │   ├── wifi/               STA connect, NVS credentials + dev Kconfig fallback
-│   └── provisioning/       SoftAP + HTTP setup portal (spec Section 16 slice)
+│   ├── provisioning/       SoftAP + HTTP setup portal (spec Section 16 slice)
+│   ├── settings_server/    post-connect HTTP server: HA URL + token -> NVS
+│   └── http_forms/         shared form-decoding helpers (used by both servers above)
 ├── storage/                NVS string get/set wrapper
 ├── diagnostics/            periodic heap/PSRAM/uptime log
-└── ui/animations/          boot sequence (spec Section 15), Helios logo asset
+└── ui/animations/          boot sequence (spec Section 15) + persistent IP screen, Helios logo asset
 ```
 
 `helios/`, `networking/discovery/`, `ota/`, and the rest of `ui/`
 (home/solar/battery/consumption/grid) are intentionally still empty — the
 remaining V0.2/V0.3/V0.4 scope per the roadmap in `docs/SPEC.md` Section 34.
-In particular, `networking/provisioning/` only covers the Wi-Fi setup half
-of V0.2 - Home Assistant discovery and pairing (spec Sections 17-18) still
-need a dedicated HA custom integration and haven't been started.
+`networking/discovery/` in particular will likely stay empty — Home
+Assistant pairing now goes through `settings_server`'s token entry instead
+of device discovery (see above), which doesn't need it.
 
 ## Regenerating the boot logo
 
@@ -168,7 +188,7 @@ The Helios logo used in the boot animation
 
 ```sh
 python3 tools/asset-gen/svg_to_lvgl.py \
-    assets/brand/helios-logo.svg 220 helios_logo \
+    assets/brand/helios-logo.svg 440 helios_logo \
     firmware/ui/animations/assets/helios_logo.c
 ```
 

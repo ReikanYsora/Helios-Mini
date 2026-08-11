@@ -6,8 +6,10 @@
 #include "audio.h"
 #include "wifi_sta.h"
 #include "provisioning.h"
+#include "settings_server.h"
 #include "diagnostics.h"
 #include "boot_animation.h"
+#include "network_status.h"
 #include "esp_log.h"
 
 static const char *TAG = "helios_mini";
@@ -47,13 +49,22 @@ void app_main(void)
 
     if (!audio_init()) {
         ESP_LOGW(TAG, "audio codec bring-up failed; I2S bus and PA enable are still usable");
+    } else {
+        /* Confirms the speaker path works without needing an audio asset -
+         * see docs/SPEC.md Section 5 (audio isn't a primary V1 feature, but
+         * it should be validated and ready for notification sounds). */
+        audio_play_startup_tone();
     }
 
     if (force_provisioning || !provisioning_has_credentials()) {
         ESP_LOGI(TAG, "no Wi-Fi credentials (or BOOT held at power-on): starting setup portal");
         provisioning_start_portal();
     } else {
+        /* Keeps the on-screen IP current across (re)connects, so the
+         * settings server below is always reachable at a glance. */
+        wifi_sta_set_connected_cb(network_status_show_connected);
         wifi_sta_start();
+        settings_server_start();
     }
 
     diagnostics_start();
