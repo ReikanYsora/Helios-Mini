@@ -217,12 +217,117 @@ confirmation of the rotation fix and logo size, and audible confirmation of
 the startup tone, are pending - need the user looking at/listening to the
 actual device.
 
+## Home Assistant discovery, token validation, debug page (2026-08-11)
+
+Three more pieces added on top of `settings_server`:
+
+- **`networking/ha_discovery`**: mDNS browse for `_home-assistant._tcp.local.`
+  (the service Home Assistant's own Zeroconf integration advertises under),
+  using the `espressif/mdns` managed component. Exposed at `/scan` on the
+  settings server; picking a result prefills the URL field but still
+  requires pressing Save (no silent auto-connect). The `mdns_result_t`
+  field names used in `ha_discovery.c` were guesses when written (same
+  situation as the es8311/button surprises earlier) but **compiled clean
+  on the first try** against the resolved `espressif/mdns 1.11.3` - no
+  fixes needed here, unlike those two.
+- **`helios/ha_client`**: a REST call to `<url>/api/` with the token as a
+  Bearer credential, used both right after Save and from a "Test
+  connection again" link. This is the *entire* extent of the Home
+  Assistant client for now — no WebSocket, no energy data. On "token
+  expiration": Home Assistant Long-Lived Access Tokens don't carry an
+  expiry date the API exposes (they're valid until revoked), so there's
+  nothing to proactively track. What this does instead: detect a rejected
+  token (401/403) whenever it's actually used, and tell the user to
+  generate a fresh one - the only thing actually possible here.
+- **`/debug`** on the settings server: a live system status line
+  (`diagnostics_get_status()`) plus three hardware self-tests
+  (`diagnostics_test_screen/speaker/microphone()`) - flash a few colors,
+  play the startup tone, report peak microphone level. No gyroscope test:
+  **this board doesn't have one.** Confirmed by checking Waveshare's own
+  example repo for this exact board (`ESP32-S3-Touch-AMOLED-1.32`) - no
+  IMU/gyro example anywhere in it, unlike some other Waveshare AMOLED
+  variants (e.g. the 1.8" one) whose product listings do advertise one.
+  Said so explicitly on the debug page rather than omitting it silently.
+
+**Verified live on hardware, by the user testing through a browser while
+this was being watched over serial** (not just a clean log - actual
+functional confirmation): saved a real Home Assistant URL + token through
+`/save`, and `ha_client_test_connection()` returned `ok` against the real
+instance. mDNS (`mdns_mem: mDNS task will be created...`) started without
+crashing when `/scan` was hit. No stack overflows, no LVGL corruption, on
+top of an already-larger `settings_server` (8 registered routes now).
+
+Known rough edges, not yet addressed:
+- The HA token is stored in NVS in **plaintext** - no flash/NVS encryption.
+  Fine for bring-up, worth hardening before anything ships (matches the
+  same "flag it, don't build it now" treatment as the open Wi-Fi setup AP).
+- `/scan`'s mDNS query is synchronous inside the HTTP request (blocks
+  ~3s) - acceptable for a manually-triggered button, would need to become
+  asynchronous if it were ever auto-triggered on page load.
+
+## Speaker was silent - I2S mono slot mode (2026-08-11)
+
+User feedback after this round: display, Wi-Fi, mDNS, and the settings
+server all confirmed working live - but no sound from the startup tone.
+
+`hardware/audio` configured the I2S bus with
+`I2S_SLOT_MODE_MONO`. Re-checked Waveshare's own audio reference for this
+exact board (`Example/ESP-IDF/05_Audio_Test`) and it always opens the
+ES8311 with `channel = 2` (stereo), even though the board only has one
+speaker. Most inexpensive I2S DAC/ADC codecs, ES8311 included, only
+implement the full stereo Philips frame; ESP-IDF's I2S "mono slot" mode
+sends just one slot per LRCK cycle, which this class of codec doesn't
+handle and reads as silence rather than falling back to something audible.
+
+Fixed by switching to `I2S_SLOT_MODE_STEREO` and duplicating each mono
+sample onto both L/R slots when writing
+(`audio_play_startup_tone()`)/reading (`audio_measure_mic_level()`,
+peak taken across both slots regardless of which one is real).
+
+**Confirmed on hardware**: audible, but a very quiet, very short "plouc" -
+the stereo fix was the right call, the sound itself (single 880Hz tone,
+180ms, amplitude 6000/32767) was just underwhelming as a product sound.
+
+## Startup chime redesign, attempt 1 - simultaneous chord (2026-08-11)
+
+Replaced the single debug beep with a four-voice "sunrise" chord swell (F
+major - root/third/fifth + an octave-up shimmer voice, all four sounding
+*at once*), staggered entrances, ~1.2s total, ES8311 volume raised 70->92.
+
+**User verdict: "sounds like an ocean liner foghorn."** Root cause:
+playing several tones simultaneously on a small single-driver speaker
+produces audible beat frequencies between the close-together tones (349Hz
+vs 440Hz beats at 91Hz, 440 vs 523 at 83Hz, etc.) - right in the "foghorn
+wah-wah" perceptual range, and a small speaker's nonlinearity has no
+headroom to keep a 4-note stack clean regardless.
+
+## Startup chime redesign, attempt 2 - sequential arpeggio (2026-08-11)
+
+Replaced the chord with a **rising arpeggio**: the same four F-major notes
+(F4, A4, C5, F5), but played **one at a time** (130/130/140/420ms, the
+last one held with a graceful release; ~820ms total) - never more than one
+tone sounding, so there is nothing left to beat against. Each note has its
+own short raised-cosine attack (12ms) and release that reaches exactly 0
+at the note's own end, so transitions between notes are click-free without
+needing to matching phase across different frequencies. Volume backed off
+from 92 to 85 (up from the original 70, short of the 92 that may have been
+part of what pushed the chord into distortion too). Single voice at a
+time, so headroom is less of a concern than it was for the stacked chord.
+
+Builds clean, boots without crashing (the ~820ms delay before Wi-Fi
+connect in the boot log is this chime playing synchronously, shorter than
+attempt 1's ~1.2s, as expected). **Not yet confirmed how attempt 2 actually
+sounds** - awaiting the user listening again.
+
 ## Still open (need eyes/ears on the physical board)
 
-- [ ] Confirm the panel now displays right-side up with `MADCTL = 0xC0`
-      (see above) and that the doubled boot logo looks right, not clipped
-      oddly by the circular bezel.
-- [ ] Confirm the startup tone is actually audible through the speaker.
+- [x] Panel orientation (`MADCTL = 0xC0`) and the doubled boot logo -
+      confirmed good by the user (2026-08-11).
+- [ ] Confirm the startup tone is audible now that I2S is in stereo slot
+      mode (just fixed, not yet re-tested - was confirmed silent before).
+- [ ] Confirm the microphone level test (`/debug/mic`) actually responds to
+      real sound - the stereo-mode fix applies to the RX path too but
+      hasn't been tried at all yet, silent or not.
 - [ ] Confirm `TE` (GPIO 9) is safe to leave unconnected in software for V0.1
       (tearing may be visible without it; acceptable for bring-up, revisit
       for V0.3 UI polish).

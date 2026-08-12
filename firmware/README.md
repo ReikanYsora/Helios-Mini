@@ -9,10 +9,12 @@ SoftAP + browser setup page, no more hardcoded dev credentials required.
 **Home Assistant pairing deliberately does not follow spec Sections 17-18**
 (discovery + a dedicated custom integration). Instead, once connected to the
 home network, the device runs its own small settings server (reachable at
-the IP permanently shown on screen) where the user pastes an HA URL and a
-Long-Lived Access Token — simpler to build and to use, at the cost of one
-manual step (generating the token in HA) instead of a one-tap pairing
-button. See "Home Assistant settings" below. The Helios UI, OTA, and
+the IP permanently shown on screen) that can find Home Assistant on the LAN
+via mDNS, takes a URL + a Long-Lived Access Token, and tests the connection
+immediately — simpler to build and to use, at the cost of one manual step
+(generating the token in HA) instead of a one-tap pairing button. The same
+server also has a `/debug` page with hardware self-tests (screen, speaker,
+microphone). See "Home Assistant settings" below. The Helios UI, OTA, and
 full diagnostics come in later versions.
 
 ## Status: running on hardware, Wi-Fi setup verified end-to-end
@@ -74,21 +76,39 @@ turned out to be real and are now fixed in code:
   `ES8311_ADDRRES_0` (the codec I2C address constant, typo and all) was a
   correct guess.
 
-Remaining open items, still unverified because they need eyes/ears on the
-physical device (not just a clean serial log) — see
-`docs/HARDWARE_REFERENCE.md`: the panel orientation fix, the doubled boot
-logo, the startup tone actually being audible, and touch.
+Panel orientation and the doubled boot logo are confirmed good on hardware.
+The startup sound took three rounds to get right — confirmed **silent**
+(I2S was in mono slot mode, which the ES8311 doesn't handle; fixed by
+switching to stereo), then confirmed **audible but sounding like a
+foghorn** (playing a 4-note chord simultaneously beats against itself on a
+small speaker), now rewritten as a **sequential rising arpeggio** (one note
+at a time — nothing left to beat against). Full story in
+`docs/HARDWARE_REFERENCE.md`; the arpeggio version hasn't been listened to
+yet. Touch and the microphone level test are still completely untried.
 
 ### Persistent on-screen IP + Home Assistant settings
 
 Once connected to the home network, the screen shows **"Helios Mini /
 `http://<device-ip>/`"** permanently (updates itself across reconnects).
 Browse to that address from any device on the same network to reach
-`networking/settings_server`: a form for the Home Assistant base URL and a
-Long-Lived Access Token (Profile → Security → Long-Lived Access Tokens in
-Home Assistant), saved to NVS. **This only saves the settings** — nothing
-yet reads them back and actually talks to Home Assistant (no WebSocket
-client, no energy data). That's the next piece of work.
+`networking/settings_server`:
+
+- **`/`** — Home Assistant base URL + Long-Lived Access Token form
+  (Profile → Security → Long-Lived Access Tokens in Home Assistant), saved
+  to NVS. Saving tests the connection immediately via `helios/ha_client`
+  (a REST call to `<url>/api/`) and shows the result — confirmed working
+  live against a real instance.
+- **`/scan`** — mDNS search (`networking/ha_discovery`) for Home Assistant
+  on the LAN; picking a result prefills the URL field, Save still commits
+  it (no silent auto-connect).
+- **`/debug`** — live system status (uptime/heap/PSRAM/Wi-Fi RSSI) plus
+  buttons to flash the screen, play the startup tone, and measure the
+  microphone's peak level. No gyroscope test - **this board doesn't have
+  one** (confirmed against Waveshare's own example repo; some other
+  Waveshare AMOLED variants do).
+
+`helios/ha_client` only validates the token for now — no WebSocket client,
+no energy data pipeline yet. That's the next piece of work.
 
 ## Flash / monitor
 

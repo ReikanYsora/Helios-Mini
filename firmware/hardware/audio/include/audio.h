@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /* Brings up the I2S bus, enables the PA, and initializes the ES8311 codec.
  * Audio is not a primary V1 feature (spec Section 5) - this exists to
@@ -12,8 +13,16 @@ bool audio_init(void);
 
 void audio_pa_enable(bool enable);
 
-/* Plays a short synthesized chime (no audio asset needed) to confirm the
- * speaker path works. Enables the PA for the duration and disables it
- * afterwards. Blocks for roughly STARTUP_TONE_MS. audio_init() must have
- * succeeded first. */
+/* Plays a synthesized rising-arpeggio "sunrise" chime (~0.8s, no audio
+ * asset needed) to confirm the speaker path works and give the device an
+ * actual startup sound rather than a debug beep. Notes play one at a
+ * time, never stacked - see the comment in audio.c on why. Enables the PA
+ * for the duration and disables it afterwards - blocks for roughly that
+ * long. audio_init() must have succeeded first. */
 void audio_play_startup_tone(void);
+
+/* Records ~0.5s from the microphone and returns the peak sample magnitude
+ * (0-32767), or -1 on error. Meant for a debug/self-test UI: talk or clap
+ * close to the board while calling this and expect a value clearly above
+ * the room's noise floor. audio_init() must have succeeded first. */
+int16_t audio_measure_mic_level(void);
