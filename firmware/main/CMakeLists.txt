@@ -12,6 +12,7 @@ idf_component_register(
         wifi
         provisioning
         settings_server
+        energy_model
         storage
         diagnostics
         animations

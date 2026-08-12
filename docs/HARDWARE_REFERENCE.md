@@ -379,6 +379,123 @@ connection stayed reachable throughout -> `/network/disable-ap` -> reverts).
 No crashes, no new warnings in the serial log. Visual review by the user
 (not just curl/tag-balance checks) is still pending.
 
+## Energy rings + `/display` settings (2026-08-13)
+
+The on-screen UI: three concentric Apple-Watch-style rings (solar / grid /
+battery, outer to inner) plus the home's current consumption as big text in
+the middle, backed by a new `/display` page on the settings server where
+every Home Assistant entity and ring limit gets configured, with a live
+per-entity status panel. New components, dependency direction kept strict
+to avoid cycles:
+
+```
+ui/home (energy_rings.h/.c)        <- pure LVGL renderer, REQUIRES display only
+  ^
+helios/energy_model                <- polling/business logic, REQUIRES storage ha_client home
+  ^
+networking/settings_server         <- /display page, REQUIRES energy_model (+ everything it already had)
+```
+
+`helios/energy_model` deliberately does **not** depend on
+`networking/settings_server` even though it needs the stored Home Assistant
+URL/token - it re-reads those two NVS keys (`ha_url`/`ha_token`) directly
+with a tiny local `load_ha_credentials()`, rather than pull in the whole
+settings app as a dependency just for two `storage_get_string()` calls.
+
+**Entity model** mirrors the parent Helios HA card's `chip-appearance.ts`
+exactly: 6 independently-optional entities (solar, grid import, grid
+export, battery charge, battery discharge, home), same fallback colors
+(`#ff9800` / `#488fc2` / `#8353d1` / `#f06292` / `#4db6ac`). Battery is two
+separate power entities, not one signed value - same reasoning as Helios.
+`ENERGY_DEFAULT_MAX_SOLAR_W = 5000` reuses Helios's own
+`DEFAULT_MAX_EXPECTED_POWER_W`.
+
+**`helios/ha_client`** gained `ha_client_get_entity_power()`: GET
+`<url>/api/states/<entity_id>`, parsed with cJSON (ESP-IDF's built-in
+`json` component - `REQUIRES` needed adding it alongside `esp_http_client`).
+Returns one of six outcomes (`ha_entity_status_t`): OK, not configured, not
+found (404), unavailable/unknown state, not-numeric state, unauthorized,
+unreachable - this is what makes the status panel able to "gere TOUS LES
+CAS" instead of just showing a blank ring. `kW`/`MW`
+`unit_of_measurement` attributes are detected and normalized to watts
+automatically; anything else (plain `W` or no unit) is taken as already
+being watts.
+
+**`helios/energy_model`** polls all 6 entities every 10s in a background
+task, decides which direction is "live" for the two two-entity rings
+(grid import vs. export, battery charge vs. discharge - whichever is
+above a 5W noise threshold, defaulting to import/discharge on a tie),
+computes each ring's fill % against its configured max, and calls
+`energy_rings_update()`. The very first time the `home` entity gets
+configured, it swaps the screen from the persistent IP notice
+(`ui/animations/network_status`) over to the rings permanently -
+there's no way back to the IP screen without rebooting, matching how the
+rings are meant to become the device's actual home screen once set up.
+`energy_model_refresh_config()` (a binary semaphore the poll task blocks
+on with a timeout) lets `/display/save` force an immediate re-poll instead
+of waiting up to 10s.
+
+**`/display`** (GET) shows the live entity status panel (reading the
+poller's last snapshot via `energy_model_get_status()`) followed by a
+single combined form: 6 entity-id text inputs + 4 ring-limit number
+inputs, one Save button. **`/display/save`** (POST) persists both, wakes
+the poller, then - like `/ha/save` before it - synchronously re-tests
+every entity that was actually filled in and renders the same status
+panel with fresh results, so saving gives immediate feedback instead of
+"wait up to 10s and reload". Every status panel row is exactly one of
+five states, never a blank: not configured / Home Assistant not set up /
+not tested yet / a real `ha_entity_status_t` error / OK with the live
+value.
+
+### Bug: empty dynamic strings silently truncated every page
+
+Found while first testing `/display` live on a fresh device (all 6 entity
+fields empty, as intended before anyone configures anything).
+`GET /display` came back HTTP 200 with a plausible `Content-Length`-free
+chunked body that just... stopped, mid-attribute, no closing tags:
+
+```
+...<input type='text' name='ent_solar' placeholder='sensor.solar_power' value='
+```
+*(response ends here - no closing quote, no `</form>`, no `</html>`)*
+
+Root cause: every dynamic string on every settings-server page goes
+through `httpd_resp_sendstr_chunk(req, s)`, which is a thin wrapper over
+`httpd_resp_send_chunk(req, s, strlen(s))`. Per esp_http_server's own
+contract, calling `httpd_resp_send_chunk()` with a **zero-length buffer**
+is the documented way to end a chunked response - the exact same call
+shape used deliberately once at the very end of `close_page()`
+(`httpd_resp_sendstr_chunk(req, NULL)`). An *empty* dynamic value -
+an unconfigured entity id, here - produces `strlen(s) == 0` and hits that
+same "end the response now" path by accident, mid-page.
+
+This was latent in `/ha` too (`escaped_url` is empty before Home Assistant
+is ever configured) but had never actually been exercised empty in a live
+test, since Home Assistant was configured on the test device before `/ha`
+was first curled. `/display` has *six* such fields and is the first page
+normally viewed with all of them empty (a fresh device), which is why it
+surfaced here.
+
+**Fix**: added `send_chunk(req, s)` in `settings_server.c` - skips the
+call entirely for `NULL`/empty strings (a no-op for the HTML either way)
+and otherwise forwards to `httpd_resp_sendstr_chunk()`. Every dynamic
+`httpd_resp_sendstr_chunk()` call site in the file (~150) now goes through
+it; the one deliberate `NULL` terminator in `close_page()` was kept as a
+direct call, on purpose, since that *is* the real end-of-response signal
+and must not be skipped.
+
+**Verified live** after the fix: `/display`, `/ha`, `/network`, `/debug`
+all fetched over the LAN with `curl` and each response now ends in
+`</html>` (checked by hand, not just tag-balance counting this time).
+Then exercised `/display/save` twice against the real board: once with a
+deliberately wrong entity id (`sensor.does_not_exist_xyz`) for `home` -
+the status panel correctly came back `no such entity in Home Assistant`
+(a real 404 round-tripped from the user's actual Home Assistant instance,
+confirming auth, the REST call, and the JSON/status-code handling all
+work end-to-end) - then again with everything cleared back to empty to
+leave the device in a clean, unconfigured state. No crashes or reboots
+in the serial log across any of this.
+
 ## Still open (need eyes/ears on the physical board)
 
 - [x] Panel orientation (`MADCTL = 0xC0`) and the doubled boot logo -
@@ -405,3 +522,13 @@ No crashes, no new warnings in the serial log. Visual review by the user
       USB-only configuration: does the board actually stay powered after
       the PWR button is released once V0.1 asserts the latch, exactly as
       it does in the vendor's battery-equipped reference?
+- [ ] Visual review of the energy rings on the actual round panel (layout,
+      arc widths/gaps, colors, center text legibility) - only verified so
+      far via `/display`'s status panel over `curl` and the entity model's
+      logic, not by looking at the physical screen with real entities
+      configured.
+- [ ] Configure real Home Assistant entity ids on `/display` (currently
+      cleared back to empty after testing) and confirm the rings actually
+      track live solar/grid/battery/home power over time, including the
+      grid/battery ring auto-switching between import/export and
+      charge/discharge.

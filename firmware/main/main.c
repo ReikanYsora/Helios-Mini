@@ -7,6 +7,7 @@
 #include "wifi_sta.h"
 #include "provisioning.h"
 #include "settings_server.h"
+#include "energy_model.h"
 #include "diagnostics.h"
 #include "boot_animation.h"
 #include "network_status.h"
@@ -64,6 +65,12 @@ void app_main(void)
         wifi_sta_set_connected_cb(network_status_show_connected);
         wifi_sta_start();
         settings_server_start();
+        /* Polls Home Assistant for the energy rings and switches the screen
+         * from the IP notice to them once a "home" entity is configured -
+         * see docs/HARDWARE_REFERENCE.md. Only makes sense once the device
+         * can actually reach Home Assistant, so it's not started in the
+         * setup-portal branch above. */
+        energy_model_start();
     }
 
     diagnostics_start();

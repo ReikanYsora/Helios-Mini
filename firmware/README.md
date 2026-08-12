@@ -114,18 +114,50 @@ external requests, no icon font):
   `<url>/api/`) and shows the result. `/ha/scan` searches mDNS
   (`networking/ha_discovery`) for Home Assistant on the LAN; picking a
   result prefills the URL field, Save still commits it.
+- **Display** (`/display`, `/display/save`) — which Home Assistant entity
+  feeds each energy ring (solar, grid import, grid export, battery charge,
+  battery discharge, home) and each ring's 100% power reference, plus a
+  live per-entity status panel: not configured / Home Assistant not set
+  up / not tested yet / a real error (not found, unavailable, not
+  numeric, unauthorized, unreachable) / OK with the live value. Saving
+  tests every filled-in entity immediately against the real Home
+  Assistant instance, same as `/ha/save`.
 - **Debug** (`/debug` and sub-paths) — live system status
   (uptime/heap/PSRAM/Wi-Fi RSSI) plus buttons to flash the screen, play
   the startup chime, and measure the microphone's peak level. No
   gyroscope test - this board doesn't have one.
 
-Verified live: fetched all three pages over the LAN with `curl` (200s,
-balanced tags), then exercised the AP toggle end-to-end through the
-running device with the station connection staying up throughout. Not yet
-reviewed by a human actually looking at it in a browser.
+Verified live: fetched all four pages over the LAN with `curl` (200s,
+each response checked to actually end in `</html>`, not just tag-balance
+counted), exercised the AP toggle end-to-end through the running device
+with the station connection staying up throughout, and exercised
+`/display/save` against the real board with both a deliberately wrong
+entity id (came back "no such entity in Home Assistant" — a real 404
+round-tripped from the user's Home Assistant instance) and a reset back
+to empty. Not yet reviewed by a human actually looking at it in a
+browser, or with real entity ids configured.
 
-`helios/ha_client` only validates the token for now — no WebSocket client,
-no energy data pipeline yet. That's the next piece of work.
+`helios/ha_client` now also fetches individual entity power values
+(`ha_client_get_entity_power()`, used by the energy rings below) on top
+of the token-validation call — still no WebSocket client or push
+updates, everything is polled.
+
+### The energy rings
+
+Three concentric Apple-Watch-style rings on the round panel — solar / grid
+/ battery, outer to inner — plus the home's current consumption as big
+text in the middle. `helios/energy_model` polls Home Assistant every 10s
+(`ha_client_get_entity_power()` against the 6 entities configured on
+`/display`), decides which direction is live for the two-entity rings
+(grid import vs. export, battery charge vs. discharge), and pushes the
+result to `ui/home`'s `energy_rings_update()`. The screen switches from
+the persistent IP notice to the rings the first time a `home` entity gets
+configured — there's no way back to the IP notice without rebooting.
+Entity model and colors mirror the parent Helios HA card's
+`chip-appearance.ts` exactly, including battery being two separate
+entities (charge/discharge), not one signed value. Full write-up,
+including a chunked-HTTP-response bug this surfaced (empty dynamic
+strings were silently truncating pages), in `docs/HARDWARE_REFERENCE.md`.
 
 ## Flash / monitor
 
@@ -203,22 +235,26 @@ firmware/
 ├── networking/
 │   ├── wifi/               STA connect + setup-AP toggle, NVS credentials + dev Kconfig fallback
 │   ├── provisioning/       SoftAP + HTTP setup portal (spec Section 16 slice)
-│   ├── settings_server/    the settings app (Network/Home Assistant/Debug), mdi_icons.h
+│   ├── settings_server/    the settings app (Network/Home Assistant/Display/Debug), mdi_icons.h
 │   ├── ha_discovery/       mDNS search for Home Assistant on the LAN
 │   └── http_forms/         shared form-decoding helpers (used by every HTTP server above)
 ├── helios/
-│   └── ha_client/          REST call to validate a Home Assistant URL + token
+│   ├── ha_client/          REST calls: validate a URL + token, fetch one entity's power
+│   └── energy_model/       polls Home Assistant every 10s, drives ui/home's rings; entity
+│                            + ring-limit config storage (energy_config.h)
 ├── storage/                NVS string get/set wrapper
 ├── diagnostics/            periodic heap/PSRAM/uptime log + on-demand status/self-tests
-└── ui/animations/          boot sequence (spec Section 15) + persistent IP screen, Helios logo asset
+└── ui/
+    ├── animations/         boot sequence (spec Section 15) + persistent IP screen, Helios logo asset
+    └── home/                energy_rings.h/.c - the three-ring + center-text screen (pure LVGL, no HA)
 ```
 
-`helios/energy_model/`, `helios/pairing/`, `networking/discovery/`, `ota/`,
-and the rest of `ui/` (home/solar/battery/consumption/grid) are
-intentionally still empty — the remaining V0.2/V0.3/V0.4 scope per the
-roadmap in `docs/SPEC.md` Section 34. `networking/discovery/` (device
-*being* discovered by Home Assistant) and `helios/pairing/` in particular
-will likely stay empty — Home Assistant pairing now goes through
+`helios/pairing/`, `networking/discovery/`, `ota/`, and the rest of `ui/`
+(solar/battery/consumption/grid as separate screens) are intentionally
+still empty — the remaining V0.2/V0.3/V0.4 scope per the roadmap in
+`docs/SPEC.md` Section 34. `networking/discovery/` (device *being*
+discovered by Home Assistant) and `helios/pairing/` in particular will
+likely stay empty — Home Assistant pairing now goes through
 `settings_server`'s token entry instead (see above), which doesn't need
 either.
 

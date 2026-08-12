@@ -86,6 +86,29 @@ All notable changes to Helios Mini will be documented in this file.
   `http://192.168.4.1/` without disturbing the existing station connection
   - the already-running `settings_server` becomes reachable there too
   automatically, since `esp_http_server` binds to all interfaces.
+- Energy rings (`ui/home`): three concentric Apple-Watch-style `lv_arc`
+  rings - solar production, grid import/export, battery charge/discharge -
+  plus the home's current consumption as big text in the middle. A pure
+  LVGL renderer with no Home Assistant knowledge of its own.
+- `helios/energy_model`: polls Home Assistant every 10s for the 6
+  configured entities, decides which direction is live for the two
+  two-entity rings (grid import vs. export, battery charge vs. discharge),
+  computes fill percentages against configurable limits, and drives
+  `ui/home`. Switches the screen from the persistent IP notice to the
+  rings the first time a "home" entity is configured. Entity/color model
+  mirrors the parent Helios HA card's `chip-appearance.ts` exactly,
+  including battery being two separate entities, not one signed value.
+- `helios/ha_client` gained `ha_client_get_entity_power()`: fetches one
+  entity's numeric state via cJSON, auto-converting `kW`/`MW` to watts,
+  and reports one of six outcomes (OK / not configured / not found /
+  unavailable / not numeric / unauthorized / unreachable) so nothing is
+  ever silently blank.
+- `/display` + `/display/save` on the settings server: which entity feeds
+  each ring, each ring's 100% power reference, and a live per-entity
+  status panel using every `ha_entity_status_t` outcome above. Saving
+  tests every filled-in entity immediately against the real Home
+  Assistant instance, same as `/ha/save`. New "Display" sidebar item
+  (between Home Assistant and Debug).
 
 ### Fixed
 
@@ -110,6 +133,16 @@ All notable changes to Helios Mini will be documented in this file.
   tones on a small single-driver speaker land right in "foghorn wah-wah"
   territory. Rewritten as a sequential rising arpeggio - one note at a
   time, nothing left to beat against.
+- Settings-server pages silently truncated mid-response whenever a
+  dynamic value being rendered was an empty string (e.g. `/display` with
+  no entities configured yet, or `/ha` before a URL is saved):
+  `httpd_resp_sendstr_chunk(req, "")` hits the exact same "zero-length
+  buffer ends the chunked response" signal `esp_http_server` uses on
+  purpose for the real end-of-page terminator. Added a `send_chunk()`
+  wrapper that skips empty/NULL strings (a no-op for the HTML either way)
+  and routed every dynamic string in `settings_server.c` through it,
+  keeping the one deliberate `NULL` terminator in `close_page()` as a
+  direct call. See `docs/HARDWARE_REFERENCE.md`.
 
 ### Changed
 
@@ -132,3 +165,18 @@ The redesigned settings app's `/network`, `/ha`, and `/debug` pages were
 fetched over the LAN with `curl` (200s, well-formed HTML) and the new
 setup-AP toggle was exercised end-to-end on the running device without
 losing the station connection. See `docs/HARDWARE_REFERENCE.md`.
+
+### Verified on hardware (2026-08-13)
+
+`/display`, `/ha`, `/network`, `/debug` all fetched over the LAN with
+`curl`, each response checked to actually end in `</html>` (the empty-
+string chunk-truncation bug above was found and fixed in this pass).
+`/display/save` exercised twice against the real board: once with a
+deliberately wrong entity id, which correctly came back "no such entity
+in Home Assistant" - a real 404 round-tripped end-to-end from the user's
+actual Home Assistant instance, confirming auth, the REST call, and the
+JSON/status-code handling all work - then again with everything cleared
+back to empty. No crashes or reboots in the serial log throughout. Not
+yet verified: the rings actually rendering correctly on the physical
+round panel, or tracking real entities over time (see
+`docs/HARDWARE_REFERENCE.md`'s "Still open" list).
