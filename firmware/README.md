@@ -77,35 +77,52 @@ turned out to be real and are now fixed in code:
   correct guess.
 
 Panel orientation and the doubled boot logo are confirmed good on hardware.
-The startup sound took three rounds to get right — confirmed **silent**
-(I2S was in mono slot mode, which the ES8311 doesn't handle; fixed by
-switching to stereo), then confirmed **audible but sounding like a
-foghorn** (playing a 4-note chord simultaneously beats against itself on a
-small speaker), now rewritten as a **sequential rising arpeggio** (one note
-at a time — nothing left to beat against). Full story in
-`docs/HARDWARE_REFERENCE.md`; the arpeggio version hasn't been listened to
-yet. Touch and the microphone level test are still completely untried.
+The startup chime went through two redesigns based on listening to the
+real hardware — silent (I2S mono-slot mode) → audible but "sounds like an
+ocean liner foghorn" (a 4-note chord beats against itself on a small
+speaker) → a sequential rising arpeggio — and the user's verdict on the
+arpeggio was still "absolutely awful." Rather than keep iterating blind,
+**the automatic chime is disabled on boot** (`main.c` no longer calls it);
+`audio_play_startup_tone()` is untouched and still reachable manually from
+`/debug/speaker` for whenever the sound design resumes. Touch and the
+microphone level test are still completely untried. Full story in
+`docs/HARDWARE_REFERENCE.md`.
 
-### Persistent on-screen IP + Home Assistant settings
+### The settings app: topbar, sidebar, Home Assistant, debug tools
 
 Once connected to the home network, the screen shows **"Helios Mini /
 `http://<device-ip>/`"** permanently (updates itself across reconnects).
 Browse to that address from any device on the same network to reach
-`networking/settings_server`:
+`networking/settings_server` — a small app with a topbar (Helios logo,
+live Wi-Fi/HA connection status icons) and a sidebar (collapses to
+icons-only on narrow screens), all inline SVG using real **MDI icons**
+(`firmware/networking/settings_server/mdi_icons.h`, extracted from
+`@mdi/js` - the same icon set Home Assistant's own frontend uses, no
+external requests, no icon font):
 
-- **`/`** — Home Assistant base URL + Long-Lived Access Token form
-  (Profile → Security → Long-Lived Access Tokens in Home Assistant), saved
-  to NVS. Saving tests the connection immediately via `helios/ha_client`
-  (a REST call to `<url>/api/`) and shows the result — confirmed working
-  live against a real instance.
-- **`/scan`** — mDNS search (`networking/ha_discovery`) for Home Assistant
-  on the LAN; picking a result prefills the URL field, Save still commits
-  it (no silent auto-connect).
-- **`/debug`** — live system status (uptime/heap/PSRAM/Wi-Fi RSSI) plus
-  buttons to flash the screen, play the startup tone, and measure the
-  microphone's peak level. No gyroscope test - **this board doesn't have
-  one** (confirmed against Waveshare's own example repo; some other
-  Waveshare AMOLED variants do).
+- **Network** (`/network`) — Wi-Fi connection status (SSID/signal), and a
+  toggle for the `HELIOS-MINI-XXXX` setup AP alongside the existing
+  station connection (`wifi_sta_set_setup_ap_enabled()`, `WIFI_MODE_STA`
+  <-> `WIFI_MODE_APSTA` at runtime) - lets a second device join and reach
+  this same settings app at `http://192.168.4.1/` without disturbing the
+  current connection. To actually change *which* network the device
+  connects to, hold BOOT at power-on instead (full reprovisioning).
+- **Home Assistant** (`/ha`, `/ha/save`, `/ha/test`, `/ha/scan`) — base
+  URL + Long-Lived Access Token form (Profile → Security → Long-Lived
+  Access Tokens in Home Assistant), saved to NVS. Saving tests the
+  connection immediately via `helios/ha_client` (a REST call to
+  `<url>/api/`) and shows the result. `/ha/scan` searches mDNS
+  (`networking/ha_discovery`) for Home Assistant on the LAN; picking a
+  result prefills the URL field, Save still commits it.
+- **Debug** (`/debug` and sub-paths) — live system status
+  (uptime/heap/PSRAM/Wi-Fi RSSI) plus buttons to flash the screen, play
+  the startup chime, and measure the microphone's peak level. No
+  gyroscope test - this board doesn't have one.
+
+Verified live: fetched all three pages over the LAN with `curl` (200s,
+balanced tags), then exercised the AP toggle end-to-end through the
+running device with the station connection staying up throughout. Not yet
+reviewed by a human actually looking at it in a browser.
 
 `helios/ha_client` only validates the token for now — no WebSocket client,
 no energy data pipeline yet. That's the next piece of work.
@@ -184,21 +201,26 @@ firmware/
 │   ├── buttons/            BOOT/PWR via espressif/button
 │   └── audio/              I2S + PA enable + ES8311
 ├── networking/
-│   ├── wifi/               STA connect, NVS credentials + dev Kconfig fallback
+│   ├── wifi/               STA connect + setup-AP toggle, NVS credentials + dev Kconfig fallback
 │   ├── provisioning/       SoftAP + HTTP setup portal (spec Section 16 slice)
-│   ├── settings_server/    post-connect HTTP server: HA URL + token -> NVS
-│   └── http_forms/         shared form-decoding helpers (used by both servers above)
+│   ├── settings_server/    the settings app (Network/Home Assistant/Debug), mdi_icons.h
+│   ├── ha_discovery/       mDNS search for Home Assistant on the LAN
+│   └── http_forms/         shared form-decoding helpers (used by every HTTP server above)
+├── helios/
+│   └── ha_client/          REST call to validate a Home Assistant URL + token
 ├── storage/                NVS string get/set wrapper
-├── diagnostics/            periodic heap/PSRAM/uptime log
+├── diagnostics/            periodic heap/PSRAM/uptime log + on-demand status/self-tests
 └── ui/animations/          boot sequence (spec Section 15) + persistent IP screen, Helios logo asset
 ```
 
-`helios/`, `networking/discovery/`, `ota/`, and the rest of `ui/`
-(home/solar/battery/consumption/grid) are intentionally still empty — the
-remaining V0.2/V0.3/V0.4 scope per the roadmap in `docs/SPEC.md` Section 34.
-`networking/discovery/` in particular will likely stay empty — Home
-Assistant pairing now goes through `settings_server`'s token entry instead
-of device discovery (see above), which doesn't need it.
+`helios/energy_model/`, `helios/pairing/`, `networking/discovery/`, `ota/`,
+and the rest of `ui/` (home/solar/battery/consumption/grid) are
+intentionally still empty — the remaining V0.2/V0.3/V0.4 scope per the
+roadmap in `docs/SPEC.md` Section 34. `networking/discovery/` (device
+*being* discovered by Home Assistant) and `helios/pairing/` in particular
+will likely stay empty — Home Assistant pairing now goes through
+`settings_server`'s token entry instead (see above), which doesn't need
+either.
 
 ## Regenerating the boot logo
 

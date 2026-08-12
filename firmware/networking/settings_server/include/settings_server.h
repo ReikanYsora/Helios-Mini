@@ -5,17 +5,24 @@
 
 /* Starts a small HTTP server on the station interface (the device's normal
  * LAN IP - see ui/animations/network_status.h for how that IP gets shown
- * on screen). Routes:
- *   /              Home Assistant URL + Long-Lived Access Token form.
- *                  Saving tests the connection immediately (helios/ha_client)
- *                  and shows the result - no silent failures.
- *   /scan          mDNS search (networking/ha_discovery) for Home Assistant
- *                  instances on the LAN; picking one prefills the URL field,
- *                  the user still presses Save to actually commit it.
- *   /test          re-tests the already-saved URL/token on demand.
- *   /debug         hardware self-tests (screen/speaker/microphone; no
- *                  gyroscope - this board doesn't have one) plus a live
- *                  system status snapshot (diagnostics).
+ * on screen). A topbar (Helios logo + live Wi-Fi/Home Assistant status
+ * icons) and a left sidebar (Network / Home Assistant / Debug) frame every
+ * page - icons are inline MDI SVGs (see mdi_icons.h), the same icon set
+ * Home Assistant's own frontend uses, no external requests. Routes:
+ *   /                       redirects to /network.
+ *   /network                Wi-Fi connection status; toggle for the
+ *                            "HELIOS-MINI-XXXX" setup AP alongside the
+ *                            existing station connection (wifi_sta.h).
+ *   /ha, /ha/save, /ha/test Home Assistant URL + Long-Lived Access Token
+ *                            form. Saving tests the connection immediately
+ *                            (helios/ha_client) and shows the result.
+ *   /ha/scan                mDNS search (networking/ha_discovery) for Home
+ *                            Assistant on the LAN; picking a result
+ *                            prefills the URL field, Save still commits it.
+ *   /debug and its sub-paths hardware self-tests (screen/speaker/microphone)
+ *                            plus a live system status snapshot
+ *                            (diagnostics). No gyroscope test - this board
+ *                            doesn't have one.
  *
  * This replaces the discovery/pairing custom-integration flow originally
  * sketched in spec Sections 17-18: instead of Helios Mini being discovered

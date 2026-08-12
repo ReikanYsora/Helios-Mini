@@ -69,6 +69,23 @@ All notable changes to Helios Mini will be documented in this file.
   play the startup chime, and measure the microphone's peak level. No
   gyroscope test - this board doesn't have one (confirmed against
   Waveshare's own example repo for this exact board).
+- Settings app redesign (`networking/settings_server`): a topbar (Helios
+  logo + live Wi-Fi/Home Assistant status icons) and a sidebar (Network /
+  Home Assistant / Debug, collapses to icons-only on narrow screens) frame
+  every page now. Icons are real MDI (Material Design Icons - the same set
+  Home Assistant's own frontend uses), extracted from the user's local
+  `ha-frontend` checkout's `@mdi/js` package and embedded inline as SVG
+  (`firmware/networking/settings_server/mdi_icons.h`) - no external
+  requests, no icon font.
+- Routes reorganized: `/` -> `/network` (Wi-Fi status, new setup-AP
+  toggle), the old root form -> `/ha` (+ `/ha/save`, `/ha/test`,
+  `/ha/scan`), `/debug` unchanged in substance.
+- Setup-AP toggle on `/network` (`wifi_sta_set_setup_ap_enabled()`):
+  switches `WIFI_MODE_STA` <-> `WIFI_MODE_APSTA` at runtime, letting a
+  second device join `HELIOS-MINI-XXXX` and reach the same settings app at
+  `http://192.168.4.1/` without disturbing the existing station connection
+  - the already-running `settings_server` becomes reachable there too
+  automatically, since `esp_http_server` binds to all interfaces.
 
 ### Fixed
 
@@ -94,7 +111,15 @@ All notable changes to Helios Mini will be documented in this file.
   territory. Rewritten as a sequential rising arpeggio - one note at a
   time, nothing left to beat against.
 
-### Verified on hardware (2026-08-11)
+### Changed
+
+- Automatic startup chime disabled on boot: the rising-arpeggio redesign
+  was still judged "absolutely awful" by the user. `audio_play_startup_tone()`
+  is unchanged and still reachable manually from `/debug/speaker` for
+  whenever the sound design resumes deliberately instead of iterating
+  blind between flashes.
+
+### Verified on hardware (2026-08-11 - 2026-08-12)
 
 First flash on the real board (both crashes above hit and fixed along the
 way). After fixing them, a full live run succeeded end-to-end: booted,
@@ -103,4 +128,7 @@ setup page (network scan included), submitted real Wi-Fi credentials,
 the device saved them to NVS, rebooted, connected in station mode, and
 got a DHCP lease on the target network. V0.1 hardware bring-up + the V0.2
 Wi-Fi-provisioning slice are now confirmed working, not just compiling.
-See `docs/HARDWARE_REFERENCE.md`.
+The redesigned settings app's `/network`, `/ha`, and `/debug` pages were
+fetched over the LAN with `curl` (200s, well-formed HTML) and the new
+setup-AP toggle was exercised end-to-end on the running device without
+losing the station connection. See `docs/HARDWARE_REFERENCE.md`.

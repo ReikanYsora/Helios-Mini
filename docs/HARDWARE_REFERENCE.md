@@ -316,18 +316,83 @@ time, so headroom is less of a concern than it was for the stacked chord.
 
 Builds clean, boots without crashing (the ~820ms delay before Wi-Fi
 connect in the boot log is this chime playing synchronously, shorter than
-attempt 1's ~1.2s, as expected). **Not yet confirmed how attempt 2 actually
-sounds** - awaiting the user listening again.
+attempt 1's ~1.2s, as expected).
+
+**User verdict: still "absolutely awful."** Rather than attempt a third
+redesign blind, the automatic startup chime is **disabled** for now
+(`main.c` no longer calls `audio_play_startup_tone()` on boot) so it stops
+interrupting testing/waking the household. `audio_play_startup_tone()`
+itself is untouched and still reachable manually from `/debug/speaker` on
+the settings server, for whenever sound design work on it resumes
+deliberately instead of iterating blind between builds.
+
+## Web UI redesign: topbar + sidebar, MDI icons, AP toggle (2026-08-12)
+
+Replaced the single flat settings page with an actual small app shell,
+built directly into `networking/settings_server` (no separate frontend
+build, no JS - everything is server-rendered HTML with inline SVG icons,
+consistent with every other page on this device):
+
+- **Topbar**: the Helios sun mark (inline SVG, path extracted directly
+  from `assets/brand/helios-logo.svg`) + "Helios Mini" on the left; live
+  Wi-Fi and Home Assistant connection status icons on the right (green/red/
+  grey depending on `diagnostics_get_status()` and the stored
+  `ha_client_status_t`).
+- **Sidebar**: Network / Home Assistant / Debug, icon + label, active item
+  highlighted. Collapses to icons-only below 640px width (pure CSS media
+  query, no JS) so it stays usable on a phone.
+- **Icons are real MDI** (Material Design Icons - `wifi`, `home-assistant`,
+  `lan`, `bug`, `magnify`, `monitor`, `volume-high`, `microphone`,
+  `access-point`/`access-point-off`, `refresh`, `content-save`), the same
+  icon set Home Assistant's own frontend uses. Path data extracted directly
+  from the `@mdi/js` package in the user's local `ha-frontend` checkout
+  (`node_modules/@mdi/js/mdi.js`) rather than reconstructed from memory,
+  and embedded as `firmware/networking/settings_server/mdi_icons.h`.
+  Icons are sent as separate `httpd_resp_sendstr_chunk()` calls around the
+  raw path string (never through a bounded `snprintf`), which also
+  sidesteps the format-truncation bug class from earlier in this file.
+
+Routes reorganized to match the new information architecture:
+
+| Old | New |
+|---|---|
+| `/` (WiFi+HA mixed) | `/network` (Wi-Fi status + setup-AP toggle) |
+| `/save`, `/test`, `/scan` | `/ha`, `/ha/save`, `/ha/test`, `/ha/scan` |
+| `/debug` and sub-paths | unchanged, just re-skinned; gyroscope sentence removed entirely per user request rather than kept as a caveat |
+
+**New: setup-AP toggle on `/network`.** `wifi_sta_set_setup_ap_enabled()`
+switches `WIFI_MODE_STA` <-> `WIFI_MODE_APSTA` at runtime and (re)configures
+the `HELIOS-MINI-XXXX` AP, without tearing down the station connection or
+the already-running `settings_server` - because `esp_http_server` binds to
+all interfaces by default, the *same* server instance becomes reachable at
+`http://192.168.4.1/` the moment the AP comes up, no second server needed.
+This is separate from `networking/provisioning`'s own AP (which only ever
+runs before any Wi-Fi credentials exist) - this one lets a second device
+join and reach the settings app on demand, any time after the device is
+already on the home network.
+
+**Verified live**: fetched `/network`, `/ha`, `/debug` over the LAN with
+`curl` (200s, well-formed - balanced `<div>`/`<svg>` tag counts checked,
+no gyroscope mentions), then exercised the AP toggle end-to-end through
+the running device (`/network/enable-ap` -> page confirms "Active", station
+connection stayed reachable throughout -> `/network/disable-ap` -> reverts).
+No crashes, no new warnings in the serial log. Visual review by the user
+(not just curl/tag-balance checks) is still pending.
 
 ## Still open (need eyes/ears on the physical board)
 
 - [x] Panel orientation (`MADCTL = 0xC0`) and the doubled boot logo -
       confirmed good by the user (2026-08-11).
-- [ ] Confirm the startup tone is audible now that I2S is in stereo slot
-      mode (just fixed, not yet re-tested - was confirmed silent before).
+- [x] Startup chime is audible (speaker path itself works, confirmed via
+      two rounds of user listening) - **disabled on boot anyway**, pending
+      a sound design that isn't "absolutely awful"; still reachable at
+      `/debug/speaker` for whenever that resumes.
 - [ ] Confirm the microphone level test (`/debug/mic`) actually responds to
       real sound - the stereo-mode fix applies to the RX path too but
       hasn't been tried at all yet, silent or not.
+- [ ] Visual review of the new `/network`, `/ha`, `/debug` pages (topbar,
+      sidebar, icons, AP toggle) - only checked so far via `curl` and tag
+      counting, not by a human actually looking at it in a browser.
 - [ ] Confirm `TE` (GPIO 9) is safe to leave unconnected in software for V0.1
       (tearing may be visible without it; acceptable for bring-up, revisit
       for V0.3 UI polish).

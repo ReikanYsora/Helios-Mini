@@ -49,12 +49,11 @@ void app_main(void)
 
     if (!audio_init()) {
         ESP_LOGW(TAG, "audio codec bring-up failed; I2S bus and PA enable are still usable");
-    } else {
-        /* Confirms the speaker path works without needing an audio asset -
-         * see docs/SPEC.md Section 5 (audio isn't a primary V1 feature, but
-         * it should be validated and ready for notification sounds). */
-        audio_play_startup_tone();
     }
+    /* Automatic startup chime disabled for now - still being tuned (see
+     * docs/HARDWARE_REFERENCE.md) and nobody wants it firing on every boot
+     * while that's in progress. audio_play_startup_tone() still works and
+     * is reachable manually from the settings server's /debug page. */
 
     if (force_provisioning || !provisioning_has_credentials()) {
         ESP_LOGI(TAG, "no Wi-Fi credentials (or BOOT held at power-on): starting setup portal");

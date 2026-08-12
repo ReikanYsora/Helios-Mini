@@ -4,6 +4,7 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_mac.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -92,4 +93,59 @@ bool wifi_sta_wait_connected(int timeout_ms)
     }
     EventBits_t bits = xEventGroupWaitBits(s_wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(timeout_ms));
     return (bits & WIFI_CONNECTED_BIT) != 0;
+}
+
+void wifi_sta_get_setup_ap_ssid(char *out, size_t out_size)
+{
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    snprintf(out, out_size, "HELIOS-MINI-%02X%02X", mac[4], mac[5]);
+}
+
+static bool s_ap_enabled = false;
+static bool s_ap_netif_created = false;
+
+bool wifi_sta_is_setup_ap_enabled(void)
+{
+    return s_ap_enabled;
+}
+
+bool wifi_sta_set_setup_ap_enabled(bool enable)
+{
+    if (enable == s_ap_enabled) {
+        return true;
+    }
+
+    if (enable) {
+        if (!s_ap_netif_created) {
+            esp_netif_create_default_wifi_ap();
+            s_ap_netif_created = true;
+        }
+
+        char ap_ssid[24];
+        wifi_sta_get_setup_ap_ssid(ap_ssid, sizeof(ap_ssid));
+
+        wifi_config_t ap_config = {0};
+        strncpy((char *)ap_config.ap.ssid, ap_ssid, sizeof(ap_config.ap.ssid) - 1);
+        ap_config.ap.ssid_len = strlen(ap_ssid);
+        ap_config.ap.channel = 1;
+        ap_config.ap.authmode = WIFI_AUTH_OPEN; /* same tradeoff as networking/provisioning's AP */
+        ap_config.ap.max_connection = 4;
+
+        if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK ||
+            esp_wifi_set_config(WIFI_IF_AP, &ap_config) != ESP_OK) {
+            ESP_LOGE(TAG, "failed to enable setup AP");
+            return false;
+        }
+        ESP_LOGI(TAG, "setup AP '%s' enabled at http://192.168.4.1/ alongside the station connection", ap_ssid);
+    } else {
+        if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) {
+            ESP_LOGE(TAG, "failed to disable setup AP");
+            return false;
+        }
+        ESP_LOGI(TAG, "setup AP disabled");
+    }
+
+    s_ap_enabled = enable;
+    return true;
 }
