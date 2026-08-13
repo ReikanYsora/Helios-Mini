@@ -44,10 +44,10 @@ LV_IMAGE_DECLARE(mdi_wifi);
 #define RING_TRACK_MIX     70   /* groove = ~27% ring colour over black */
 #define RING_TIP_MIX      180   /* tip disc = ring colour lifted ~30% toward white */
 
-/* The general view's centre number must never spill onto the innermost
- * ring: clamp it to the clear disc inside the battery ring and step the
- * Figtree size down (48 -> 32 -> 24) until it fits that width. */
-#define CENTER_TEXT_MAX_W  (RING_BATTERY_DIAM - 2 * RING_WIDTH - 12)
+/* The general view's centre number is a fixed Figtree 32 - one size, never
+ * resized under the reading (which read as jumpy). 32 keeps even a
+ * five-digit "99999 W" inside the clear disc within the innermost ring. */
+#define CENTER_TEXT_FONT   figtree_32
 
 /* Stroke centreline radius for a ring of the given outer diameter - where
  * its tip bead rides. The bead disc is reachable from the arc through its
@@ -305,26 +305,6 @@ static void set_ring_colors(lv_obj_t *arc, uint32_t hex)
     }
 }
 
-/* Sets the centre number at the largest Figtree size that still fits the
- * clear disc inside the rings, so a long value (big wattage, or kW with a
- * decimal) shrinks instead of running under the innermost ring. */
-static void fit_center_text(lv_obj_t *label, const char *text)
-{
-    static const lv_font_t *const fonts[] = { &figtree_48, &figtree_32, &figtree_24 };
-    size_t count = sizeof(fonts) / sizeof(fonts[0]);
-    const lv_font_t *chosen = fonts[count - 1];
-    for (size_t i = 0; i < count; i++) {
-        lv_point_t size;
-        lv_text_get_size(&size, text, fonts[i], 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-        if (size.x <= CENTER_TEXT_MAX_W) {
-            chosen = fonts[i];
-            break;
-        }
-    }
-    lv_obj_set_style_text_font(label, chosen, 0);
-    lv_label_set_text(label, text);
-}
-
 /* ---- general view (page 0) ---- */
 
 static void build_general_view(lv_obj_t *tile)
@@ -335,16 +315,18 @@ static void build_general_view(lv_obj_t *tile)
     s_arc_battery = create_ring(tile, RING_BATTERY_DIAM, RING_WIDTH);
 
     s_center_text = lv_label_create(tile);
-    lv_obj_set_style_text_font(s_center_text, &figtree_48, 0);
+    lv_obj_set_style_text_font(s_center_text, &CENTER_TEXT_FONT, 0);
     lv_obj_set_style_text_color(s_center_text, lv_color_white(), 0);
     lv_label_set_text(s_center_text, "--");
-    lv_obj_align(s_center_text, LV_ALIGN_CENTER, 0, -8);
+    /* Dead-centre in the rings - the number is the hero; the house icon and
+     * sub-line hang off it as satellites above and below. */
+    lv_obj_align(s_center_text, LV_ALIGN_CENTER, 0, 0);
 
     /* A house icon above the number stands in for a "home consumption"
      * label - no redundant text needed when everything's fine. */
     s_center_icon = lv_image_create(tile);
     lv_image_set_src(s_center_icon, &mdi_home_icon);
-    lv_obj_align_to(s_center_icon, s_center_text, LV_ALIGN_OUT_TOP_MID, 0, -8);
+    lv_obj_align_to(s_center_icon, s_center_text, LV_ALIGN_OUT_TOP_MID, 0, -6);
 
     s_center_sub = lv_label_create(tile);
     lv_obj_set_style_text_color(s_center_sub, lv_color_hex(0x9a9aa5), 0);
@@ -366,7 +348,7 @@ static void update_general_view(const energy_display_t *d)
     animate_arc_to(s_arc_battery, ring_target_value(&d->battery, d->battery.visible));
     set_ring_colors(s_arc_battery, d->battery.color_hex);
 
-    fit_center_text(s_center_text, d->center_text);
+    lv_label_set_text(s_center_text, d->center_text);
     lv_label_set_text(s_center_sub, d->center_sub);
     lv_obj_align_to(s_center_sub, s_center_text, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
 }
