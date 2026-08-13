@@ -6,6 +6,7 @@
 #include "energy_rings.h"
 #include "irradiance_model.h"
 #include "wifi_sta.h"
+#include "network_status.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -35,6 +36,11 @@
 
 static SemaphoreHandle_t s_wake_sem;
 static bool s_rings_shown = false;
+/* Fallback so we never sit on the boot logo forever: after this many render
+ * ticks with Home Assistant still not connected, show the address screen. */
+#define NO_HA_FALLBACK_TICKS 10
+static int s_no_ha_ticks;
+static bool s_ha_fallback_shown;
 /* Last page-visibility config the screen was actually built with - so a
  * /display toggle change (energy_model_refresh() wakes this task early)
  * gets picked up as a rebuild without tearing the whole screen down and
@@ -86,8 +92,20 @@ static void render(void)
     ha_ws_get_status(&ws);
 
     if (!ws.energy_dashboard_configured) {
-        return; /* nothing to show yet - leave the IP notice on screen */
+        /* Don't sit on the boot logo forever if Home Assistant never
+         * connects: after a while, show the address screen where the user
+         * can check or fix the link. */
+        if (++s_no_ha_ticks >= NO_HA_FALLBACK_TICKS && !s_ha_fallback_shown) {
+            char ip[16];
+            if (wifi_sta_get_ip(ip, sizeof(ip))) {
+                network_status_show_connected(ip);
+                s_ha_fallback_shown = true;
+            }
+        }
+        return;
     }
+    s_no_ha_ticks = 0;
+    s_ha_fallback_shown = false;
 
     energy_page_visibility_t pages;
     energy_config_load_pages(&pages);
