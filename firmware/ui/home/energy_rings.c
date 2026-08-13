@@ -1,6 +1,8 @@
 #include "energy_rings.h"
 #include "display.h"
 #include "lvgl.h"
+#include "qr.h"
+#include "figtree.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -110,6 +112,7 @@ static int s_page_count; /* how many of the MAX_PAGES slots above are actually p
  * scrollbar. */
 static lv_obj_t *s_ip_tile;
 static lv_obj_t *s_ip_label;   /* single line, "192.168.0.45" */
+static lv_obj_t *s_ip_qr;      /* QR of the settings URL, hidden until an IP is known */
 static lv_obj_t *s_vdots_row;
 static lv_obj_t *s_vdots[2]; /* [0]=general (top), [1]=IP (bottom) - matches row order */
 
@@ -246,7 +249,7 @@ static void build_general_view(lv_obj_t *tile)
     s_arc_battery = create_ring(tile, RING_BATTERY_DIAM, RING_WIDTH);
 
     s_center_text = lv_label_create(tile);
-    lv_obj_set_style_text_font(s_center_text, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(s_center_text, &figtree_48, 0);
     lv_obj_set_style_text_color(s_center_text, lv_color_white(), 0);
     lv_label_set_text(s_center_text, "--");
     lv_obj_align(s_center_text, LV_ALIGN_CENTER, 0, -8);
@@ -420,7 +423,7 @@ static void build_hero_view(lv_obj_t *tile, const lv_image_dsc_t *icon_src, hero
     lv_obj_set_style_image_recolor_opa(v->icon, LV_OPA_COVER, 0);
 
     v->value_label = lv_label_create(v->chip);
-    lv_obj_set_style_text_font(v->value_label, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_font(v->value_label, &figtree_32, 0);
     lv_obj_set_style_text_color(v->value_label, lv_color_white(), 0);
     lv_label_set_text(v->value_label, "--");
 
@@ -527,7 +530,7 @@ static void set_breakdown_row(lv_obj_t *label, const char *text)
 static void build_consumption_view(lv_obj_t *tile)
 {
     s_consumption_text = lv_label_create(tile);
-    lv_obj_set_style_text_font(s_consumption_text, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(s_consumption_text, &figtree_48, 0);
     lv_obj_set_style_text_color(s_consumption_text, lv_color_white(), 0);
     lv_label_set_text(s_consumption_text, "--");
     lv_obj_align(s_consumption_text, LV_ALIGN_CENTER, 0, -110);
@@ -590,9 +593,12 @@ static void build_ip_view(lv_obj_t *tile)
 
     s_ip_label = lv_label_create(stack);
     /* Same size as a hero chip's value text, per spec. */
-    lv_obj_set_style_text_font(s_ip_label, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_font(s_ip_label, &figtree_32, 0);
     lv_obj_set_style_text_color(s_ip_label, lv_color_white(), 0);
     lv_label_set_text(s_ip_label, "--");
+
+    s_ip_qr = helios_qr_create(stack, "http://0.0.0.0/", 140);
+    lv_obj_add_flag(s_ip_qr, LV_OBJ_FLAG_HIDDEN);
 }
 
 void energy_rings_set_ip(const char *ip)
@@ -603,7 +609,16 @@ void energy_rings_set_ip(const char *ip)
     if (!display_lock(1000)) {
         return;
     }
-    lv_label_set_text(s_ip_label, (ip != NULL && ip[0] != '\0') ? ip : "--");
+    if (ip != NULL && ip[0] != '\0') {
+        lv_label_set_text(s_ip_label, ip);
+        char url[40];
+        snprintf(url, sizeof(url), "http://%s/", ip);
+        lv_qrcode_update(s_ip_qr, url, (uint32_t)strlen(url));
+        lv_obj_remove_flag(s_ip_qr, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_label_set_text(s_ip_label, "--");
+        lv_obj_add_flag(s_ip_qr, LV_OBJ_FLAG_HIDDEN);
+    }
     display_unlock();
 }
 

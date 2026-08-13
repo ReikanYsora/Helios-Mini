@@ -50,7 +50,10 @@ CONFIG_LV_COLOR_SCREEN_TRANSP=y
 CONFIG_LV_MEM_CUSTOM=y
 CONFIG_LV_MEMCPY_MEMSET_STD=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_32=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
 # lv_snapshot_take() - powers /debug's screenshot download (display_take_screenshot_bmp()).
 CONFIG_LV_USE_SNAPSHOT=y
+# lv_qrcode - onboarding QR codes on screen (ui/qr).
+CONFIG_LV_USE_QRCODE=y

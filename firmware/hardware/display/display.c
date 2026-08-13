@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "lvgl.h"
+#include "figtree.h"
 
 #include <assert.h>
 #include <string.h>
@@ -372,6 +373,10 @@ void display_init(void)
     void *buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
     assert(buf1 && buf2);
     lv_display_set_buffers(disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+    /* Figtree (the Helios brand font) as the default for every widget. */
+    lv_theme_default_init(disp, lv_palette_main(LV_PALETTE_BLUE),
+                          lv_palette_main(LV_PALETTE_RED), true, &figtree_16);
 
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);

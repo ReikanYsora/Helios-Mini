@@ -413,6 +413,8 @@ static esp_err_t ha_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static void hard_reset_timer_cb(void *arg); /* defined below - a clean reboot */
+
 static esp_err_t ha_save_post_handler(httpd_req_t *req)
 {
     if (req->content_len <= 0 || req->content_len > SETTINGS_MAX_FORM_LEN) {
@@ -451,6 +453,23 @@ static esp_err_t ha_save_post_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "settings saved (url set: %s, token set: %s), test result: %s",
              url[0] ? "yes" : "no", token[0] ? "yes" : "no", ha_client_status_key(status));
+
+    if (status == HA_CLIENT_STATUS_OK) {
+        /* Restart to apply: a clean boot connects the Home Assistant
+         * WebSocket reliably and then shows the rings; a live reconnect
+         * right after setup is flaky (it comes up before the network is
+         * ready and doesn't always recover). */
+        open_page(req, "Helios Mini - Saved", "ha");
+        send_chunk(req, "<h1>Home Assistant linked</h1>"
+            "<p>Helios Mini is restarting to show your energy. You can close this page.</p>");
+        close_page(req);
+
+        const esp_timer_create_args_t reboot_args = { .callback = &hard_reset_timer_cb, .name = "ha_saved_reboot" };
+        esp_timer_handle_t reboot_timer;
+        esp_timer_create(&reboot_args, &reboot_timer);
+        esp_timer_start_once(reboot_timer, 1500 * 1000);
+        return ESP_OK;
+    }
 
     open_page(req, "Helios Mini - Saved", "ha");
     send_chunk(req, "<h1>Saved</h1><p>");

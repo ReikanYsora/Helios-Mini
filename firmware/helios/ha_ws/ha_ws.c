@@ -6,6 +6,7 @@
 #include "esp_websocket_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_netif.h"
 #include "cJSON.h"
 
 #include "freertos/FreeRTOS.h"
@@ -583,6 +584,17 @@ static void start_or_restart_client(const char *url, const char *token)
     esp_websocket_client_start(s_client);
 }
 
+/* True once the STA has a real IP - the network is ready to connect. */
+static bool sta_has_ip(void)
+{
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif == NULL) {
+        return false;
+    }
+    esp_netif_ip_info_t ip;
+    return esp_netif_get_ip_info(netif, &ip) == ESP_OK && ip.ip.addr != 0;
+}
+
 static void ha_ws_task(void *arg)
 {
     (void)arg;
@@ -606,7 +618,16 @@ static void ha_ws_task(void *arg)
         }
 
         bool url_or_token_changed = strcmp(url, s_started_url) != 0 || strcmp(token, s_started_token) != 0;
-        if (s_client == NULL || url_or_token_changed) {
+        if (s_client == NULL) {
+            /* Wait for the STA to actually have an IP before the first
+             * connect, so we don't fail against a not-yet-ready network and
+             * then sit through the client's long reconnect backoff. */
+            if (!sta_has_ip()) {
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
+            }
+            start_or_restart_client(url, token);
+        } else if (url_or_token_changed) {
             start_or_restart_client(url, token);
         }
 

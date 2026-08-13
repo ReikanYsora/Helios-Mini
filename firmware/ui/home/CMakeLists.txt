@@ -3,5 +3,5 @@ idf_component_register(
          "assets/mdi_transmission_tower.c" "assets/mdi_battery_high.c"
          "assets/mdi_wifi.c"
     INCLUDE_DIRS "include"
-    REQUIRES display
+    REQUIRES display qr fonts
 )
