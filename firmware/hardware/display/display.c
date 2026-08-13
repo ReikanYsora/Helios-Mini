@@ -382,6 +382,12 @@ void display_init(void)
     lv_theme_default_init(disp, lv_palette_main(LV_PALETTE_BLUE),
                           lv_palette_main(LV_PALETTE_RED), true, &figtree_16);
 
+    /* Black from the very first rendered frame - before the boot animation
+     * even runs - so the lvgl task can't flash the default theme background
+     * at power-on. */
+    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(lv_screen_active(), LV_OPA_COVER, 0);
+
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, touch_read_cb);
