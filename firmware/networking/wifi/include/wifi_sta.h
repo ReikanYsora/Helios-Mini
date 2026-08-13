@@ -21,8 +21,16 @@ typedef void (*wifi_sta_connected_cb_t)(const char *ip);
 
 /* Registers a callback fired (with the dotted-decimal IP string) every time
  * the device gets an IP lease - including reconnects, so it stays accurate
- * across drops. Call before wifi_sta_start(). */
+ * across drops. Only one callback slot - call before wifi_sta_start(), and
+ * have it do everything that needs to happen on an IP change (main.c's own
+ * wrapper both shows the IP notice and forwards to ui/home's IP screen). */
 void wifi_sta_set_connected_cb(wifi_sta_connected_cb_t cb);
+
+/* Writes the station's current dotted-decimal IP into out (queried live
+ * from the netif, not cached from the last connected-callback firing), or
+ * "" if not connected/no lease yet. Returns true iff an address was
+ * written. Safe to call from any task at any time. */
+bool wifi_sta_get_ip(char *out, size_t out_len);
 
 /* Toggles the "HELIOS-MINI-XXXX" setup network on top of the existing
  * station connection (WIFI_MODE_APSTA vs WIFI_MODE_STA) - lets a second

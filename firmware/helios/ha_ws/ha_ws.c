@@ -64,6 +64,9 @@ static slot_state_t s_slots[SLOT_COUNT];
 static ha_ws_link_state_t s_link = HA_WS_LINK_DISCONNECTED;
 static bool s_prefs_loaded = false;
 static bool s_energy_dashboard_configured = false;
+static bool s_instance_info_loaded = false;
+static char s_instance_name[64] = {0};
+static char s_instance_state[16] = {0};
 
 static SemaphoreHandle_t s_mutex;     /* guards s_slots[]/s_link/... - everything ha_ws_get_status() reads */
 static SemaphoreHandle_t s_rescan_sem;
@@ -419,6 +422,29 @@ static void handle_trigger_event(cJSON *root)
     }
 }
 
+/* Purely informational "the instance we found" (name/state) for the /ha
+ * settings page - one REST round trip via helios/ha_client's own
+ * /api/config fetch (the websocket handshake itself doesn't carry this),
+ * done once per successful authentication rather than repeated. This runs
+ * on ha_ws_task (process_message()'s caller), not the raw websocket
+ * client's own event callback, so blocking here for up to a few seconds
+ * only delays this task's own next queued message, never the websocket
+ * client itself - see ha_ws_task's rx-queue comment. */
+static void fetch_instance_info(void)
+{
+    ha_instance_info_t info;
+    if (!ha_client_get_instance_info(s_started_url, s_started_token, &info)) {
+        ESP_LOGW(TAG, "could not fetch instance info from %s", s_started_url);
+        return;
+    }
+    if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        strncpy(s_instance_name, info.location_name, sizeof(s_instance_name) - 1);
+        strncpy(s_instance_state, info.state, sizeof(s_instance_state) - 1);
+        s_instance_info_loaded = true;
+        xSemaphoreGive(s_mutex);
+    }
+}
+
 static void process_message(const char *msg)
 {
     cJSON *root = cJSON_Parse(msg);
@@ -441,6 +467,7 @@ static void process_message(const char *msg)
         }
         ESP_LOGI(TAG, "authenticated");
         request_prefs();
+        fetch_instance_info(); /* one blocking REST round trip, once per connection - see its own comment */
     } else if (strcmp(type_s, "auth_invalid") == 0) {
         s_authenticated = false;
         if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
@@ -689,6 +716,9 @@ void ha_ws_get_status(ha_ws_status_t *out)
     out->link = s_link;
     out->prefs_loaded = s_prefs_loaded;
     out->energy_dashboard_configured = s_energy_dashboard_configured;
+    out->instance_info_loaded = s_instance_info_loaded;
+    strncpy(out->instance_name, s_instance_name, sizeof(out->instance_name) - 1);
+    strncpy(out->instance_state, s_instance_state, sizeof(out->instance_state) - 1);
 
     int64_t now_us = esp_timer_get_time();
     fill_source(&out->solar, &s_slots[SLOT_SOLAR], now_us);

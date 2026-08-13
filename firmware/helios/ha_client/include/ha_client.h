@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 /* The full extent of the Home Assistant client for now: a REST call to
  * confirm a URL + Long-Lived Access Token actually work. No WebSocket
  * client, no energy-data model yet - see docs/HARDWARE_REFERENCE.md and
@@ -59,3 +61,23 @@ ha_entity_status_t ha_client_get_entity_power(const char *url, const char *token
 
 /* Short, human-readable status text for the entity status panel. */
 const char *ha_entity_status_text(ha_entity_status_t status);
+
+/* Home Assistant's own idea of itself (Settings -> System -> General) -
+ * one struct, one REST round trip, two independent consumers:
+ * helios/irradiance_model's sun-position math (latitude/longitude) and
+ * networking/settings_server's /ha page ("the instance we found": name +
+ * state). Zero manual entry, same philosophy as everything else here. */
+typedef struct {
+    double latitude;
+    double longitude;
+    char location_name[64]; /* HA's "location_name" - "" if the field was missing/non-string */
+    char state[16];         /* HA's own runtime state, e.g. "RUNNING" - "" if missing */
+} ha_instance_info_t;
+
+/* Blocking GET to `<url>/api/config`. Returns true and fills *out on
+ * success (JSON `latitude`/`longitude`, present on every real HA
+ * instance - `location_name`/`state` are best-effort, left as "" if
+ * absent rather than failing the whole call); false on any failure (bad
+ * URL/token, unreachable, malformed response, no latitude/longitude),
+ * leaving *out untouched. */
+bool ha_client_get_instance_info(const char *url, const char *token, ha_instance_info_t *out);

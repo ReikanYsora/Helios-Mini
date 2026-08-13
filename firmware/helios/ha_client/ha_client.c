@@ -58,10 +58,10 @@ ha_client_status_t ha_client_test_connection(const char *url, const char *token)
 const char *ha_client_status_text(ha_client_status_t status)
 {
     switch (status) {
-        case HA_CLIENT_STATUS_OK:           return "connected";
-        case HA_CLIENT_STATUS_UNAUTHORIZED: return "token rejected \xe2\x80\x94 generate a new one in Home Assistant";
-        case HA_CLIENT_STATUS_UNREACHABLE:  return "could not reach this URL";
-        default:                            return "not tested yet";
+        case HA_CLIENT_STATUS_OK:           return "Connected";
+        case HA_CLIENT_STATUS_UNAUTHORIZED: return "Token rejected \xe2\x80\x94 generate a new one in Home Assistant";
+        case HA_CLIENT_STATUS_UNREACHABLE:  return "Could not reach this URL";
+        default:                            return "Not tested yet";
     }
 }
 
@@ -218,15 +218,97 @@ ha_entity_status_t ha_client_get_entity_power(const char *url, const char *token
     return status;
 }
 
+bool ha_client_get_instance_info(const char *url, const char *token, ha_instance_info_t *out)
+{
+    if (url == NULL || token == NULL || url[0] == '\0' || token[0] == '\0') {
+        return false;
+    }
+
+    char full_url[192];
+    snprintf(full_url, sizeof(full_url), "%s/api/config", url);
+
+    char auth_header[300];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", token);
+
+    esp_http_client_config_t config = {
+        .url = full_url,
+        .timeout_ms = HA_CLIENT_TIMEOUT_MS,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        return false;
+    }
+    esp_http_client_set_header(client, "Authorization", auth_header);
+
+    bool ok = false;
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "open %s failed: %s", full_url, esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    int64_t content_length = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    if (status == 200) {
+        size_t buf_size = (content_length > 0 && content_length < 8192) ? (size_t)content_length + 1 : 4096;
+        char *buf = malloc(buf_size);
+        if (buf != NULL) {
+            int total_read = 0;
+            int r;
+            while (total_read < (int)buf_size - 1 &&
+                   (r = esp_http_client_read(client, buf + total_read, buf_size - 1 - total_read)) > 0) {
+                total_read += r;
+            }
+            buf[total_read] = '\0';
+
+            cJSON *root = cJSON_Parse(buf);
+            if (root != NULL) {
+                const cJSON *lat = cJSON_GetObjectItemCaseSensitive(root, "latitude");
+                const cJSON *lon = cJSON_GetObjectItemCaseSensitive(root, "longitude");
+                if (cJSON_IsNumber(lat) && cJSON_IsNumber(lon) && out != NULL) {
+                    ha_instance_info_t info = {0};
+                    info.latitude = lat->valuedouble;
+                    info.longitude = lon->valuedouble;
+
+                    const cJSON *name = cJSON_GetObjectItemCaseSensitive(root, "location_name");
+                    if (cJSON_IsString(name) && name->valuestring != NULL) {
+                        strncpy(info.location_name, name->valuestring, sizeof(info.location_name) - 1);
+                    }
+                    const cJSON *state = cJSON_GetObjectItemCaseSensitive(root, "state");
+                    if (cJSON_IsString(state) && state->valuestring != NULL) {
+                        strncpy(info.state, state->valuestring, sizeof(info.state) - 1);
+                    }
+
+                    *out = info;
+                    ok = true;
+                } else {
+                    ESP_LOGW(TAG, "no latitude/longitude in %s response", full_url);
+                }
+                cJSON_Delete(root);
+            } else {
+                ESP_LOGW(TAG, "bad JSON from %s", full_url);
+            }
+            free(buf);
+        }
+    } else {
+        ESP_LOGW(TAG, "unexpected HTTP status %d from %s", status, full_url);
+    }
+
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return ok;
+}
+
 const char *ha_entity_status_text(ha_entity_status_t status)
 {
     switch (status) {
-        case HA_ENTITY_STATUS_OK:             return "reporting";
-        case HA_ENTITY_STATUS_NOT_CONFIGURED: return "not configured";
-        case HA_ENTITY_STATUS_NOT_FOUND:      return "no such entity in Home Assistant";
-        case HA_ENTITY_STATUS_UNAVAILABLE:    return "unavailable / unknown in Home Assistant";
-        case HA_ENTITY_STATUS_NOT_NUMERIC:    return "state isn't a number \xe2\x80\x94 wrong entity?";
-        case HA_ENTITY_STATUS_UNAUTHORIZED:   return "token rejected \xe2\x80\x94 fix it on the Home Assistant page";
-        default:                              return "could not reach Home Assistant";
+        case HA_ENTITY_STATUS_OK:             return "Reporting";
+        case HA_ENTITY_STATUS_NOT_CONFIGURED: return "Not configured";
+        case HA_ENTITY_STATUS_NOT_FOUND:      return "No such entity in Home Assistant";
+        case HA_ENTITY_STATUS_UNAVAILABLE:    return "Unavailable / unknown in Home Assistant";
+        case HA_ENTITY_STATUS_NOT_NUMERIC:    return "State isn't a number \xe2\x80\x94 wrong entity?";
+        case HA_ENTITY_STATUS_UNAUTHORIZED:   return "Token rejected \xe2\x80\x94 fix it on the Home Assistant page";
+        default:                              return "Could not reach Home Assistant";
     }
 }

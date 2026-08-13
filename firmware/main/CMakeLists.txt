@@ -8,11 +8,13 @@ idf_component_register(
         touch
         display
         buttons
-        audio
         wifi
         provisioning
         settings_server
         energy_model
+        irradiance_model
+        mqtt_bridge
+        home
         storage
         diagnostics
         animations

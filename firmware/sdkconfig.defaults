@@ -19,10 +19,38 @@ CONFIG_SPIRAM_MODE_OCT=y
 
 CONFIG_FREERTOS_HZ=1000
 
+# mbedTLS's own SSL buffers (16 KB in + 4 KB out per session) default to
+# internal RAM - fine until something needs a TLS session on top of the
+# rest of the app (Wi-Fi, HTTP server, LVGL, ha_ws's own websocket, ...):
+# helios/irradiance_model's HTTPS GET to Open-Meteo hit
+# "mbedtls_ssl_setup returned -0x7F00" (MBEDTLS_ERR_SSL_ALLOC_FAILED) with
+# internal RAM down to ~18 KB free at the time. External puts these
+# buffers in PSRAM instead (8 MB, barely used) - a standard, IDF-supported
+# mode for exactly this situation (see mbedtls/Kconfig), not the same kind
+# of PSRAM attempt that broke the LCD panel's DMA-bound queued transmit -
+# these are plain CPU/crypto-accelerator-read buffers, not that driver.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# The BSD-socket layer's own cap (default 10) was the real bottleneck
+# behind an "MQTT save hangs, device stops answering" incident: the
+# settings web server alone reserves up to max_open_sockets=7
+# (esp_http_server's own default), leaving only 3 for ha_ws's websocket +
+# helios/irradiance_model's periodic HTTPS fetch + helios/mqtt_bridge's
+# connection combined - exhausted the moment more than one of those was
+# active at once, and a new httpd client connection (e.g. loading /mqtt)
+# had nothing left to open with. The underlying TCP layer was already
+# provisioned for more (LWIP_MAX_ACTIVE_TCP/LWIP_MAX_LISTENING_TCP default
+# to 16) - this just raises the BSD-socket ceiling to match what's already
+# budgeted underneath it, not a new unbounded cost.
+CONFIG_LWIP_MAX_SOCKETS=16
+
 # LVGL v9 (lvgl/lvgl managed component) configuration via Kconfig.
 CONFIG_LV_COLOR_16_SWAP=y
 CONFIG_LV_COLOR_SCREEN_TRANSP=y
 CONFIG_LV_MEM_CUSTOM=y
 CONFIG_LV_MEMCPY_MEMSET_STD=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+# lv_snapshot_take() - powers /debug's screenshot download (display_take_screenshot_bmp()).
+CONFIG_LV_USE_SNAPSHOT=y

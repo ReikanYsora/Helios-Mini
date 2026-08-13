@@ -23,16 +23,6 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
-  espressif/es8311:
-    component_hash: 46b3117250344bb03f143d5e2becf81cfb111679fbd7b95cefc2d302d36cc393
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.4,<6.0'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.0.0~1
   espressif/esp_lcd_sh8601:
     component_hash: 18245cd23204eefb67f61b362405f78364fa13b13cdedda5f7546d89701c506b
     dependencies:
@@ -80,11 +70,10 @@ dependencies:
     version: 9.5.0
 direct_dependencies:
 - espressif/button
-- espressif/es8311
 - espressif/esp_lcd_sh8601
 - espressif/esp_websocket_client
 - espressif/mdns
 - lvgl/lvgl
-manifest_hash: dd6609add540d0ac2e847a311bfd68a643d72a1fdf5fcbaab6d6326c5f7c4e05
+manifest_hash: 72a018273c1932bb3829240023a114e8cea63c4957ef0f89225f35d919361e94
 target: esp32s3
 version: 2.0.0

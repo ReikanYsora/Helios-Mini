@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Brings up the QSPI AMOLED panel, initializes LVGL, registers a pointer
  * indev backed by hardware/touch, and starts the LVGL refresh task. Also
@@ -18,3 +19,12 @@ void display_set_brightness(uint8_t level);
  * display_lock()/display_unlock(). */
 bool display_lock(int timeout_ms);
 void display_unlock(void);
+
+/* Renders whatever's currently on screen to a standalone 24bpp BMP file in
+ * memory - grabs the actual screen for /debug's "Screenshot" download
+ * (documentation shots, bug reports), no cable or extra tooling needed.
+ * out_buf is allocated in PSRAM (a 466x466 24bpp BMP is ~650KB, too big to
+ * risk on the internal heap) - caller owns it and must free() it. Returns
+ * false (leaves out_buf/out_len untouched) if the snapshot or allocation
+ * failed. Takes display_lock() itself - don't call this already holding it. */
+bool display_take_screenshot_bmp(uint8_t **out_buf, size_t *out_len);

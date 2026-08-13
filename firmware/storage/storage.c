@@ -38,3 +38,18 @@ esp_err_t storage_set_string(const char *namespace_name, const char *key, const 
     nvs_close(handle);
     return err;
 }
+
+esp_err_t storage_erase_all(const char *namespace_name)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(namespace_name, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_erase_all(handle);
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}

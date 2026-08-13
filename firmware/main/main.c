@@ -3,17 +3,34 @@
 #include "i2c_bus.h"
 #include "display.h"
 #include "buttons.h"
-#include "audio.h"
 #include "wifi_sta.h"
 #include "provisioning.h"
 #include "settings_server.h"
 #include "energy_model.h"
+#include "irradiance_model.h"
+#include "energy_rings.h"
+#include "mqtt_bridge.h"
 #include "diagnostics.h"
 #include "boot_animation.h"
 #include "network_status.h"
 #include "esp_log.h"
 
 static const char *TAG = "helios_mini";
+
+/* wifi_sta_connected_cb_t has one slot and no user-data parameter, so this
+ * one wrapper does everything that needs to happen on every IP change:
+ * always feed ui/home's swipe-up IP screen, and only ALSO show the
+ * one-time IP notice while Home Assistant isn't configured yet (see the
+ * comment at the registration site below). */
+static bool s_show_ip_notice = false;
+
+static void on_wifi_got_ip(const char *ip)
+{
+    energy_rings_set_ip(ip);
+    if (s_show_ip_notice) {
+        network_status_show_connected(ip);
+    }
+}
 
 static void on_button_event(helios_button_id_t id, helios_button_event_t event, void *ctx)
 {
@@ -48,14 +65,6 @@ void app_main(void)
 
     buttons_init(on_button_event, NULL);
 
-    if (!audio_init()) {
-        ESP_LOGW(TAG, "audio codec bring-up failed; I2S bus and PA enable are still usable");
-    }
-    /* Automatic startup chime disabled for now - still being tuned (see
-     * docs/HARDWARE_REFERENCE.md) and nobody wants it firing on every boot
-     * while that's in progress. audio_play_startup_tone() still works and
-     * is reachable manually from the settings server's /debug page. */
-
     if (force_provisioning || !provisioning_has_credentials()) {
         ESP_LOGI(TAG, "no Wi-Fi credentials (or BOOT held at power-on): starting setup portal");
         provisioning_start_portal();
@@ -70,9 +79,8 @@ void app_main(void)
         char ha_url[128] = {0};
         char ha_token[256] = {0};
         bool ha_already_configured = settings_get_ha_config(ha_url, sizeof(ha_url), ha_token, sizeof(ha_token));
-        if (!ha_already_configured) {
-            wifi_sta_set_connected_cb(network_status_show_connected);
-        }
+        s_show_ip_notice = !ha_already_configured;
+        wifi_sta_set_connected_cb(on_wifi_got_ip);
         wifi_sta_start();
         settings_server_start();
         /* Polls Home Assistant for the energy rings and switches the screen
@@ -82,6 +90,15 @@ void app_main(void)
          * actually reach Home Assistant, so it's not started in the
          * setup-portal branch above. */
         energy_model_start();
+        /* Location (from HA's own /api/config) + Open-Meteo cloud cover for
+         * the irradiance ring/page - independent of the Energy Dashboard,
+         * so it's started unconditionally alongside it rather than gated
+         * on ha_already_configured/energy_model_start() above. */
+        irradiance_model_start();
+        /* MQTT (if configured on /mqtt) - device controls/diagnostics as
+         * HA-discovered entities. Also independent of the Energy
+         * Dashboard. */
+        mqtt_bridge_start();
     }
 
     diagnostics_start();

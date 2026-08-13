@@ -9,10 +9,14 @@
 #include "energy_config.h"
 #include "energy_model.h"
 #include "ha_ws.h"
+#include "mqtt_bridge.h"
+#include "display.h"
 
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -63,7 +67,7 @@ static const char *PAGE_STYLE =
     ".brand{display:flex;align-items:center;gap:.5em;font-weight:600;font-size:1.05em}"
     ".status-icons{display:flex;gap:1em}"
     ".status-item{display:flex;align-items:center}"
-    ".layout{display:flex;align-items:flex-start}"
+    ".layout{display:flex;align-items:stretch;min-height:100vh}"
     ".sidebar{width:170px;flex-shrink:0;border-right:1px solid var(--border);padding:.8em 0}"
     ".sidebar a{display:flex;align-items:center;gap:.7em;padding:.65em 1em;color:var(--text-dim);"
     "text-decoration:none;font-size:.92em;border-left:3px solid transparent}"
@@ -85,6 +89,7 @@ static const char *PAGE_STYLE =
     "button{background:var(--accent);color:#111;font-weight:600;border:none;cursor:pointer;"
     "display:flex;align-items:center;justify-content:center;gap:.5em}"
     "button.secondary{background:#1a1a22;color:var(--text);border:1px solid var(--border)}"
+    "button.danger{background:var(--bad);color:#111}"
     "a.link-button{display:block;text-decoration:none}"
     "a.link-button button{pointer-events:none}"
     "label{font-size:.85em;color:var(--text-dim);display:block;margin-top:.7em}"
@@ -95,6 +100,17 @@ static const char *PAGE_STYLE =
     ".pill.warn{background:rgba(224,180,95,.15);color:var(--warn)}"
     ".hint{font-size:.82em;color:var(--text-dim);line-height:1.5;margin:.6em 0}"
     "a{color:var(--accent)}"
+    /* Toggle switch (checkbox styled as a track+thumb) - no JS, just the
+     * :checked sibling selector. Overrides the generic label{} rule above
+     * (block, margin-top) since this label wraps the input directly. */
+    ".toggle{position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0;margin:0}"
+    ".toggle input{opacity:0;width:0;height:0;position:absolute}"
+    ".toggle .track{position:absolute;inset:0;background:#1a1a22;border:1px solid var(--border);"
+    "border-radius:999px;transition:.15s;cursor:pointer}"
+    ".toggle .track:before{content:'';position:absolute;height:16px;width:16px;left:3px;top:3px;"
+    "background:var(--text-dim);border-radius:50%;transition:.15s}"
+    ".toggle input:checked+.track{background:var(--accent);border-color:var(--accent)}"
+    ".toggle input:checked+.track:before{transform:translateX(20px);background:#111}"
     "@media (max-width:640px){.sidebar{width:58px}.sidebar a span{display:none}"
     ".sidebar a{justify-content:center;padding:.9em 0}.main{padding:1em}}";
 
@@ -139,6 +155,22 @@ static void send_logo(httpd_req_t *req, int size)
     send_chunk(req, "'/></svg>");
 }
 
+/* A '.row' with a label and a real left/right toggle switch (see the CSS
+ * ".toggle" rules) instead of a bare checkbox - every on/off setting in
+ * this app goes through this. */
+static void send_toggle_row(httpd_req_t *req, const char *label, const char *name, bool checked)
+{
+    send_chunk(req, "<div class='row'><span class='label'>");
+    send_chunk(req, label);
+    send_chunk(req, "</span><label class='toggle'><input type='checkbox' name='");
+    send_chunk(req, name);
+    send_chunk(req, "' value='1'");
+    if (checked) {
+        send_chunk(req, " checked");
+    }
+    send_chunk(req, "><span class='track'></span></label></div>");
+}
+
 static void send_topbar(httpd_req_t *req)
 {
     diagnostics_status_t status;
@@ -159,6 +191,14 @@ static void send_topbar(httpd_req_t *req)
                           : "var(--bad)";
     send_chunk(req, "<span class='status-item' title='Home Assistant'>");
     send_icon(req, ICON_HOME_ASSISTANT, ha_color, 19);
+    send_chunk(req, "</span>");
+
+    mqtt_bridge_state_t mqtt_state = mqtt_bridge_get_state();
+    const char *mqtt_color = (mqtt_state == MQTT_BRIDGE_CONNECTED) ? "var(--ok)"
+                            : (mqtt_state == MQTT_BRIDGE_DISABLED) ? "var(--text-dim)"
+                            : "var(--bad)";
+    send_chunk(req, "<span class='status-item' title='MQTT'>");
+    send_icon(req, ICON_SERVER_NETWORK, mqtt_color, 19);
     send_chunk(req, "</span></div></div>");
 }
 
@@ -181,6 +221,7 @@ static void send_sidebar(httpd_req_t *req, const char *active)
     send_nav_link(req, "/network", ICON_LAN, "Network", active, "network");
     send_nav_link(req, "/ha", ICON_HOME_ASSISTANT, "Home Assistant", active, "ha");
     send_nav_link(req, "/display", ICON_CHART_DONUT, "Display", active, "display");
+    send_nav_link(req, "/mqtt", ICON_SERVER_NETWORK, "MQTT", active, "mqtt");
     send_nav_link(req, "/debug", ICON_BUG, "Debug", active, "debug");
     send_chunk(req, "</div>");
 }
@@ -232,7 +273,7 @@ static esp_err_t network_get_handler(httpd_req_t *req)
 
     send_chunk(req, "<div class='row'><span class='label'>Wi-Fi</span><span>");
     send_chunk(req, status.wifi_connected
-        ? "<span class='pill ok'>connected</span>" : "<span class='pill bad'>disconnected</span>");
+        ? "<span class='pill ok'>Connected</span>" : "<span class='pill bad'>Disconnected</span>");
     send_chunk(req, "</span></div>");
 
     if (status.wifi_connected) {
@@ -324,8 +365,29 @@ static esp_err_t ha_get_handler(httpd_req_t *req)
 
     char status_line[220];
     snprintf(status_line, sizeof(status_line), "<p class='pill %s'>%s</p>",
-             status_class, configured ? ha_client_status_text(status) : "not configured yet");
+             status_class, configured ? ha_client_status_text(status) : "Not configured yet");
     send_chunk(req, status_line);
+
+    ha_ws_status_t ws;
+    ha_ws_get_status(&ws);
+    if (ws.instance_info_loaded) {
+        send_chunk(req, "<h2>Instance found</h2><div class='card'>");
+
+        send_chunk(req, "<div class='row'><span class='label'>Name</span><span>");
+        send_chunk(req, ws.instance_name[0] != '\0' ? ws.instance_name : "\xe2\x80\x94");
+        send_chunk(req, "</span></div>");
+
+        send_chunk(req, "<div class='row'><span class='label'>Address</span><span>");
+        send_chunk(req, escaped_url);
+        send_chunk(req, "</span></div>");
+
+        const char *state_class = (strcmp(ws.instance_state, "RUNNING") == 0) ? "ok" : "warn";
+        send_chunk(req, "<div class='row'><span class='label'>State</span><span class='pill ");
+        send_chunk(req, state_class);
+        send_chunk(req, "'>");
+        send_chunk(req, ws.instance_state[0] != '\0' ? ws.instance_state : "Unknown");
+        send_chunk(req, "</span></div></div>");
+    }
 
     send_chunk(req, "<a class='link-button' href='/ha/scan'><button type='button'>");
     send_icon(req, ICON_MAGNIFY, ICON_ON_ACCENT, 18);
@@ -511,13 +573,13 @@ static void render_source_row(httpd_req_t *req, const char *label, const ha_ws_s
     if (src->status == HA_WS_SOURCE_NOT_CONFIGURED) {
         send_chunk(req, "warn'>");
         send_icon(req, ICON_CIRCLE_OFF_OUTLINE, "var(--text-dim)", 15);
-        send_chunk(req, "<span>not set up in your Energy Dashboard</span></span></div>");
+        send_chunk(req, "<span>Not set up in your Energy Dashboard</span></span></div>");
         return;
     }
     if (src->status == HA_WS_SOURCE_WAITING) {
         send_chunk(req, "warn'>");
         send_icon(req, ICON_ALERT_CIRCLE, "var(--warn)", 15);
-        send_chunk(req, "<span>waiting for first update</span></span></div>");
+        send_chunk(req, "<span>Waiting for first update</span></span></div>");
         return;
     }
 
@@ -531,7 +593,7 @@ static void render_source_row(httpd_req_t *req, const char *label, const ha_ws_s
         send_icon(req, ICON_ALERT_CIRCLE, "var(--warn)", 15);
         send_chunk(req, "<span>");
         send_chunk(req, value_text);
-        send_chunk(req, " (stale, ");
+        send_chunk(req, " (Stale, ");
         send_chunk(req, age_text);
         send_chunk(req, ")</span></span></div>");
         return;
@@ -571,11 +633,11 @@ static esp_err_t display_get_handler(httpd_req_t *req)
 
     const char *link_class = (ws.link == HA_WS_LINK_CONNECTED) ? "ok"
                             : (ws.link == HA_WS_LINK_AUTH_FAILED) ? "bad" : "warn";
-    const char *link_text = (ws.link == HA_WS_LINK_CONNECTED) ? "connected"
+    const char *link_text = (ws.link == HA_WS_LINK_CONNECTED) ? "Connected"
                            : (ws.link == HA_WS_LINK_AUTH_FAILED)
-                               ? "token rejected, fix it on the Home Assistant page"
-                           : (ws.link == HA_WS_LINK_CONNECTING) ? "connecting\xe2\x80\xa6"
-                           : "disconnected, retrying";
+                               ? "Token rejected, fix it on the Home Assistant page"
+                           : (ws.link == HA_WS_LINK_CONNECTING) ? "Connecting\xe2\x80\xa6"
+                           : "Disconnected, retrying";
     char link_line[300];
     snprintf(link_line, sizeof(link_line), "<p class='pill %s'>%s</p>", link_class, link_text);
     send_chunk(req, link_line);
@@ -609,15 +671,35 @@ static esp_err_t display_get_handler(httpd_req_t *req)
         "<p class='hint'>Only the live power (W) entity linked to each source is used, the "
         "same one the Helios card itself reads. It updates the instant Home Assistant pushes "
         "a new reading.</p>"
-        "<p class='hint'>A source is flagged \xe2\x80\x9cstale\xe2\x80\x9d if it hasn't sent "
-        "one in a while. It shows \xe2\x80\x9cnot set up in your Energy Dashboard\xe2\x80\x9d "
+        "<p class='hint'>A source is flagged \xe2\x80\x9cStale\xe2\x80\x9d if it hasn't sent "
+        "one in a while. It shows \xe2\x80\x9cNot set up in your Energy Dashboard\xe2\x80\x9d "
         "if that source has no power entity linked there at all (its cumulative energy/kWh "
         "statistic, if any, is never used).</p>"
         "<p class='hint'>The grid and battery rings each show whichever direction is "
         "currently active. For example, the grid ring fills blue while importing, then "
         "switches to purple once exporting.</p>");
 
-    send_chunk(req, "<h2>Ring limits (100% reference)</h2><form method='POST' action='/display/save'>");
+    energy_page_visibility_t pages;
+    energy_config_load_pages(&pages);
+
+    send_chunk(req, "<h2>Pages</h2><form method='POST' action='/display/save'>");
+    send_chunk(req,
+        "<p class='hint'>The general view (four rings) always shows. Turn off any dedicated "
+        "page you don't need - e.g. no battery installed - to shorten the swipe.</p>");
+
+    send_toggle_row(req, "Irradiance", "page_irradiance", pages.show_irradiance);
+    send_toggle_row(req, "Production (solar)", "page_solar", pages.show_solar);
+    send_toggle_row(req, "Import / Export", "page_grid", pages.show_grid);
+    send_toggle_row(req, "Battery", "page_battery", pages.show_battery);
+    send_toggle_row(req, "Home consumption", "page_consumption", pages.show_consumption);
+
+    send_chunk(req,
+        "<p class='hint'>Irradiance doesn't need an entity - it's computed from your home's "
+        "location in Home Assistant (Settings &rarr; System &rarr; General) and live cloud "
+        "cover from Open-Meteo. Shows \xe2\x80\x9cwaiting\xe2\x80\x9d until both resolve, which "
+        "can take a few minutes after boot.</p>");
+
+    send_chunk(req, "<h2>Ring limits (100% reference)</h2>");
 
     char num[32];
 
@@ -738,6 +820,22 @@ static esp_err_t display_save_post_handler(httpd_req_t *req)
     }
     energy_config_save_format(&fmt);
 
+    /* Unchecked checkboxes aren't sent at all, so presence in the body -
+     * not its value - is what "on" means here. */
+    energy_page_visibility_t pages;
+    char flag[4];
+    http_form_get(body, "page_solar", flag, sizeof(flag));
+    pages.show_solar = flag[0] != '\0';
+    http_form_get(body, "page_irradiance", flag, sizeof(flag));
+    pages.show_irradiance = flag[0] != '\0';
+    http_form_get(body, "page_grid", flag, sizeof(flag));
+    pages.show_grid = flag[0] != '\0';
+    http_form_get(body, "page_battery", flag, sizeof(flag));
+    pages.show_battery = flag[0] != '\0';
+    http_form_get(body, "page_consumption", flag, sizeof(flag));
+    pages.show_consumption = flag[0] != '\0';
+    energy_config_save_pages(&pages);
+
     energy_model_refresh(); /* wake the render loop now, don't wait up to 3s */
 
     httpd_resp_set_status(req, "302 Found");
@@ -751,6 +849,131 @@ static esp_err_t display_rescan_handler(httpd_req_t *req)
     ha_ws_rescan();
     httpd_resp_set_status(req, "302 Found");
     httpd_resp_set_hdr(req, "Location", "/display");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
+
+/* ---- /mqtt : broker config for helios/mqtt_bridge ---- */
+
+static esp_err_t mqtt_get_handler(httpd_req_t *req)
+{
+    mqtt_config_t cfg;
+    mqtt_config_load(&cfg);
+    mqtt_bridge_state_t state = mqtt_bridge_get_state();
+    const char *state_class = (state == MQTT_BRIDGE_CONNECTED) ? "ok"
+                             : (state == MQTT_BRIDGE_DISABLED) ? "warn" : "bad";
+
+    open_page(req, "Helios Mini - MQTT", "mqtt");
+    send_chunk(req, "<h1>MQTT</h1>");
+
+    char status_line[64];
+    snprintf(status_line, sizeof(status_line), "<p class='pill %s'>", state_class);
+    send_chunk(req, status_line);
+    send_chunk(req, mqtt_bridge_state_text(state));
+    send_chunk(req, "</p>");
+
+    send_chunk(req,
+        "<p class='hint'>Exposes on-device controls and diagnostics to Home Assistant as MQTT "
+        "entities, auto-discovered the moment this connects (MQTT discovery is on by default in "
+        "HA) - screen brightness, Wi-Fi signal, free heap/PSRAM, uptime, and ground irradiance / "
+        "cloud cover.</p>");
+
+    send_chunk(req, "<form method='POST' action='/mqtt/save'>");
+
+    send_toggle_row(req, "Enabled", "mqtt_enabled", cfg.enabled);
+
+    char escaped[196];
+    http_form_html_escape(cfg.device_name, escaped, sizeof(escaped));
+    send_chunk(req, "<label>Device name (shown in Home Assistant)</label>"
+        "<input type='text' name='mqtt_dname' placeholder='");
+    send_chunk(req, MQTT_DEFAULT_DEVICE_NAME);
+    send_chunk(req, "' value='");
+    send_chunk(req, escaped);
+    send_chunk(req, "'>");
+
+    http_form_html_escape(cfg.host, escaped, sizeof(escaped));
+    send_chunk(req, "<label>Broker host</label>"
+        "<input type='text' name='mqtt_host' placeholder='192.168.0.2' value='");
+    send_chunk(req, escaped);
+    send_chunk(req, "'>");
+
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", cfg.port > 0 ? cfg.port : MQTT_DEFAULT_PORT);
+    send_chunk(req, "<label>Broker port</label>"
+        "<input type='number' name='mqtt_port' min='1' max='65535' value='");
+    send_chunk(req, port_str);
+    send_chunk(req, "'>");
+
+    http_form_html_escape(cfg.username, escaped, sizeof(escaped));
+    send_chunk(req, "<label>Username (leave empty if the broker allows anonymous connections)</label>"
+        "<input type='text' name='mqtt_user' value='");
+    send_chunk(req, escaped);
+    send_chunk(req, "'>");
+
+    send_chunk(req, "<label>Password</label>"
+        "<input type='password' name='mqtt_pass' placeholder='");
+    send_chunk(req, cfg.password[0] != '\0' ? "leave blank to keep the current password" : "");
+    send_chunk(req, "'>");
+
+    send_chunk(req, "<button type='submit'>");
+    send_icon(req, ICON_CONTENT_SAVE, ICON_ON_ACCENT, 18);
+    send_chunk(req, "<span>Save &amp; reconnect</span></button></form>");
+
+    send_chunk(req,
+        "<p class='hint'>Most Home Assistant installs run Mosquitto on the same host as HA "
+        "itself, port 1883 - that's the usual value for \"Broker host\".</p>");
+
+    close_page(req);
+    return ESP_OK;
+}
+
+static esp_err_t mqtt_save_post_handler(httpd_req_t *req)
+{
+    if (req->content_len <= 0 || req->content_len > SETTINGS_MAX_FORM_LEN) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form too large");
+        return ESP_FAIL;
+    }
+    char body[SETTINGS_MAX_FORM_LEN + 1] = {0};
+    int received = httpd_req_recv(req, body, req->content_len);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "read failed");
+        return ESP_FAIL;
+    }
+    body[received] = '\0';
+
+    mqtt_config_t cfg;
+    mqtt_config_load(&cfg); /* start from current - an empty password field means "keep it", not "clear it" */
+
+    char flag[4];
+    http_form_get(body, "mqtt_enabled", flag, sizeof(flag));
+    cfg.enabled = flag[0] != '\0';
+
+    http_form_get(body, "mqtt_dname", cfg.device_name, sizeof(cfg.device_name));
+
+    http_form_get(body, "mqtt_host", cfg.host, sizeof(cfg.host));
+
+    char port_str[8] = {0};
+    http_form_get(body, "mqtt_port", port_str, sizeof(port_str));
+    if (port_str[0] != '\0') {
+        int parsed = atoi(port_str);
+        if (parsed > 0 && parsed <= 65535) {
+            cfg.port = parsed;
+        }
+    }
+
+    http_form_get(body, "mqtt_user", cfg.username, sizeof(cfg.username));
+
+    char password[64] = {0};
+    http_form_get(body, "mqtt_pass", password, sizeof(password));
+    if (password[0] != '\0') {
+        strncpy(cfg.password, password, sizeof(cfg.password) - 1);
+    }
+
+    mqtt_config_save(&cfg);
+    mqtt_bridge_restart(); /* take effect now, not on next reboot */
+
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/mqtt");
     httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
@@ -782,73 +1005,101 @@ static esp_err_t debug_get_handler(httpd_req_t *req)
     }
     send_chunk(req, "</div>");
 
-    send_chunk(req, "<h2>Hardware self-tests</h2>");
-
-    send_chunk(req, "<a class='link-button' href='/debug/screen'><button type='button'>");
-    send_icon(req, ICON_MONITOR, ICON_ON_ACCENT, 18);
-    send_chunk(req, "<span>Flash screen colors</span></button></a>");
-
-    send_chunk(req, "<a class='link-button' href='/debug/speaker'><button type='button'>");
-    send_icon(req, ICON_VOLUME_HIGH, ICON_ON_ACCENT, 18);
-    send_chunk(req, "<span>Play speaker tone</span></button></a>");
-
-    send_chunk(req, "<a class='link-button' href='/debug/mic'><button type='button'>");
-    send_icon(req, ICON_MICROPHONE, ICON_ON_ACCENT, 18);
-    send_chunk(req, "<span>Measure microphone level</span></button></a>");
-
-    close_page(req);
-    return ESP_OK;
-}
-
-static esp_err_t debug_screen_handler(httpd_req_t *req)
-{
-    diagnostics_test_screen();
-    open_page(req, "Helios Mini - Debug", "debug");
+    send_chunk(req, "<h2>Screenshot</h2>");
+    send_chunk(req, "<a class='link-button' href='/debug/screenshot.bmp'><button type='button'>");
+    send_icon(req, ICON_MONITOR, "#111", 18);
+    send_chunk(req, "<span>Download screenshot</span></button></a>");
     send_chunk(req,
-        "<h1>Debug</h1><p>The screen should have flashed red, green, blue, then white, "
-        "and settled back to black.</p><p><a href='/debug'>&larr; Back to debug tools</a></p>");
-    close_page(req);
-    return ESP_OK;
-}
+        "<p class='hint'>Grabs whatever's currently on the device's screen as a BMP file.</p>");
 
-static esp_err_t debug_speaker_handler(httpd_req_t *req)
-{
-    diagnostics_test_speaker();
-    open_page(req, "Helios Mini - Debug", "debug");
+    send_chunk(req, "<h2>Factory reset</h2>");
+    send_chunk(req, "<a class='link-button' href='/debug/hard-reset'><button type='button' class='danger'>");
+    send_icon(req, ICON_REFRESH, "#111", 18);
+    send_chunk(req, "<span>Hard reset</span></button></a>");
     send_chunk(req,
-        "<h1>Debug</h1><p>Played a short tone - you should have heard a brief chime.</p>"
-        "<p><a href='/debug'>&larr; Back to debug tools</a></p>");
+        "<p class='hint'>Erases Wi-Fi credentials, Home Assistant setup and every preference "
+        "stored on this device, then restarts into the setup Wi-Fi network so you can "
+        "reconfigure it from scratch.</p>");
+
     close_page(req);
     return ESP_OK;
 }
 
-static esp_err_t debug_mic_handler(httpd_req_t *req)
+/* Serves display_take_screenshot_bmp()'s output as a download rather than
+ * an inline image - Content-Disposition: attachment, so tapping the button
+ * saves a file instead of opening it in the browser. */
+static esp_err_t debug_screenshot_handler(httpd_req_t *req)
 {
-    int16_t peak = diagnostics_test_microphone();
-    open_page(req, "Helios Mini - Debug", "debug");
-    send_chunk(req, "<h1>Debug</h1>");
-
-    char line[100];
-    if (peak < 0) {
-        send_chunk(req, "<p class='pill bad'>Could not read from the microphone.</p>");
-    } else {
-        snprintf(line, sizeof(line), "<p>Peak level: <b>%d</b> / 32767</p>", peak);
-        send_chunk(req, line);
+    uint8_t *bmp = NULL;
+    size_t bmp_len = 0;
+    if (!display_take_screenshot_bmp(&bmp, &bmp_len)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "screenshot failed");
+        return ESP_FAIL;
     }
+    httpd_resp_set_type(req, "image/bmp");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"helios-mini.bmp\"");
+    esp_err_t err = httpd_resp_send(req, (const char *)bmp, bmp_len);
+    free(bmp);
+    return err;
+}
 
+static void hard_reset_timer_cb(void *arg)
+{
+    esp_restart();
+}
+
+/* Confirmation screen - the /debug page's own button links here, not
+ * straight to the POST below, so one accidental tap doesn't wipe the
+ * device. Only the form on this page can actually trigger the reset. */
+static esp_err_t debug_hard_reset_confirm_handler(httpd_req_t *req)
+{
+    open_page(req, "Helios Mini - Hard reset", "debug");
+    send_chunk(req, "<h1>Hard reset</h1>");
     send_chunk(req,
-        "<p class='hint'>That was a snapshot of the last half second. Run it again while "
-        "talking or clapping close to the board - the number should rise noticeably above "
-        "whatever it reads in a quiet room.</p>"
-        "<p><a href='/debug/mic'>Test again</a> &middot; <a href='/debug'>&larr; Back</a></p>");
+        "<p class='pill bad'>This erases everything</p>"
+        "<p class='hint'>Wi-Fi credentials, Home Assistant URL and token, ring limits, page "
+        "layout, MQTT setup - every preference stored on this device is gone. Helios Mini "
+        "restarts and emits its own setup Wi-Fi network, exactly like the first time you "
+        "unboxed it.</p>"
+        "<form method='POST' action='/debug/hard-reset'>"
+        "<button type='submit' class='danger'>");
+    send_icon(req, ICON_REFRESH, "#111", 18);
+    send_chunk(req, "<span>Yes, erase everything and restart</span></button></form>"
+        "<p><a href='/debug'>&larr; Cancel, take me back</a></p>");
     close_page(req);
+    return ESP_OK;
+}
+
+static esp_err_t debug_hard_reset_post_handler(httpd_req_t *req)
+{
+    esp_err_t err = storage_erase_all(NVS_NAMESPACE);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "hard reset: storage_erase_all failed: %s", esp_err_to_name(err));
+    }
+    ESP_LOGW(TAG, "hard reset requested from /debug - erasing NVS and restarting");
+
+    open_page(req, "Helios Mini - Hard reset", "debug");
+    send_chunk(req,
+        "<h1>Resetting&hellip;</h1>"
+        "<p>Helios Mini is erasing its settings and restarting. It will come back up as its "
+        "own Wi-Fi setup network in a few seconds.</p>");
+    close_page(req);
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = &hard_reset_timer_cb,
+        .name = "hard_reset_reboot",
+    };
+    esp_timer_handle_t timer;
+    esp_timer_create(&timer_args, &timer);
+    esp_timer_start_once(timer, 1500 * 1000); /* let the response above actually reach the browser first */
+
     return ESP_OK;
 }
 
 void settings_server_start(void)
 {
     httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
-    http_cfg.max_uri_handlers = 16;
+    http_cfg.max_uri_handlers = 24; /* headroom for hard-reset + the upcoming MQTT settings routes */
     /* See docs/HARDWARE_REFERENCE.md - networking/provisioning hit a stack
      * overflow on the default 4KB the moment a client connected for real. */
     http_cfg.stack_size = 8192;
@@ -871,10 +1122,12 @@ void settings_server_start(void)
         { .uri = "/display",            .method = HTTP_GET,  .handler = display_get_handler },
         { .uri = "/display/save",       .method = HTTP_POST, .handler = display_save_post_handler },
         { .uri = "/display/rescan",     .method = HTTP_GET,  .handler = display_rescan_handler },
+        { .uri = "/mqtt",               .method = HTTP_GET,  .handler = mqtt_get_handler },
+        { .uri = "/mqtt/save",          .method = HTTP_POST, .handler = mqtt_save_post_handler },
         { .uri = "/debug",              .method = HTTP_GET,  .handler = debug_get_handler },
-        { .uri = "/debug/screen",       .method = HTTP_GET,  .handler = debug_screen_handler },
-        { .uri = "/debug/speaker",      .method = HTTP_GET,  .handler = debug_speaker_handler },
-        { .uri = "/debug/mic",          .method = HTTP_GET,  .handler = debug_mic_handler },
+        { .uri = "/debug/screenshot.bmp", .method = HTTP_GET, .handler = debug_screenshot_handler },
+        { .uri = "/debug/hard-reset",   .method = HTTP_GET,  .handler = debug_hard_reset_confirm_handler },
+        { .uri = "/debug/hard-reset",   .method = HTTP_POST, .handler = debug_hard_reset_post_handler },
     };
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         httpd_register_uri_handler(server, &routes[i]);

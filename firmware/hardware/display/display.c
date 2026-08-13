@@ -9,15 +9,24 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "lvgl.h"
 
 #include <assert.h>
+#include <string.h>
 
 #define HELIOS_LCD_BITS_PER_PIXEL      16
-#define HELIOS_LVGL_BUF_LINES          30
+/* 30 -> 45 lines: PSRAM was a dead end for this buffer (see the flush
+ * allocation below), so this is the safe lever left - fewer, bigger
+ * partial-buffer flushes per full-height redraw (~16 -> ~11) without
+ * pushing internal-RAM usage anywhere near the edge. Real numbers from
+ * this board: steady-state free heap was 58619 B at 30 lines/DMA-RAM;
+ * 45 lines costs ~27 KB more (466 * 15 extra lines * 2 bytes * 2
+ * buffers), leaving a healthy ~31 KB margin. See docs/HARDWARE_REFERENCE.md. */
+#define HELIOS_LVGL_BUF_LINES          45
 #define HELIOS_LVGL_TICK_MS            2
 #define HELIOS_LVGL_TASK_STACK         (8 * 1024)
 #define HELIOS_LVGL_TASK_PRIORITY      2
@@ -84,7 +93,13 @@ static void panel_init(void)
         .cs_gpio_num = HELIOS_PIN_LCD_CS,
         .dc_gpio_num = -1,
         .spi_mode = 0,
-        .pclk_hz = 40 * 1000 * 1000,
+        /* 40 -> 60 MHz: the swipe's dominant cost is raw bytes-on-wire time
+         * (a full 466x466x16bpp redraw is ~430 KB, already close to one
+         * frame's budget at 40 MHz), not just flush-call overhead. Stepping
+         * up conservatively rather than jumping to this controller's
+         * theoretical max - watch for any tearing/glitching on real
+         * hardware and back off to 40 MHz if so. See docs/HARDWARE_REFERENCE.md. */
+        .pclk_hz = 60 * 1000 * 1000,
         .trans_queue_depth = 10,
         .on_color_trans_done = on_color_trans_done,
         .lcd_cmd_bits = 32,
@@ -188,6 +203,121 @@ void display_unlock(void)
     xSemaphoreGive(s_lvgl_mutex);
 }
 
+/* Little-endian field writers for the BMP header below - byte-at-a-time
+ * rather than casting (bmp + offset) to a wider int type and dereferencing,
+ * which would be unaligned access on some of these offsets. Xtensa can
+ * generally get away with that, but this is the portable way to do it and
+ * it's cheap either way for a header written once per screenshot. */
+static void bmp_put_u16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+}
+
+static void bmp_put_u32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+#define BMP_HEADER_LEN 54 /* 14-byte BITMAPFILEHEADER + 40-byte BITMAPINFOHEADER */
+
+bool display_take_screenshot_bmp(uint8_t **out_buf, size_t *out_len)
+{
+    if (!display_lock(2000)) {
+        ESP_LOGE("display", "screenshot: display_lock() timed out");
+        return false;
+    }
+
+    lv_obj_t *scr = lv_screen_active();
+    uint32_t w = (uint32_t)lv_obj_get_width(scr);
+    uint32_t h = (uint32_t)lv_obj_get_height(scr);
+    uint32_t stride = lv_draw_buf_width_to_stride(w, LV_COLOR_FORMAT_RGB565);
+
+    /* lv_snapshot_take() would allocate its own render target out of
+     * LVGL's own heap (lv_malloc, LV_MEM_SIZE_KILOBYTES=64) - nowhere near
+     * enough for a 466x466 RGB565 buffer (~425KB). Allocate that buffer
+     * ourselves straight out of PSRAM instead and hand it to LVGL with
+     * lv_snapshot_take_to_draw_buf(), which renders into a caller-owned
+     * buffer rather than allocating one. */
+    uint32_t snap_data_size = stride * h;
+    uint8_t *snap_data = heap_caps_malloc(snap_data_size, MALLOC_CAP_SPIRAM);
+    if (snap_data == NULL) {
+        ESP_LOGE("display", "screenshot: %u byte PSRAM allocation for the render target failed",
+                 (unsigned)snap_data_size);
+        display_unlock();
+        return false;
+    }
+
+    lv_draw_buf_t snap = {0};
+    if (lv_draw_buf_init(&snap, w, h, LV_COLOR_FORMAT_RGB565, stride, snap_data, snap_data_size) != LV_RESULT_OK ||
+        lv_snapshot_take_to_draw_buf(scr, LV_COLOR_FORMAT_RGB565, &snap) != LV_RESULT_OK) {
+        ESP_LOGE("display", "screenshot: lv_snapshot_take_to_draw_buf() failed (heap: internal %u, psram %u)",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        heap_caps_free(snap_data);
+        display_unlock();
+        return false;
+    }
+    /* lv_draw_buf_init() may have nudged .data forward from snap_data to
+     * satisfy LV_DRAW_BUF_ALIGN - snap.data is the pointer to actually read
+     * pixels from, snap_data (still snap_data_size long) is what gets
+     * freed below. */
+
+    /* Plain 24bpp BGR, no compression - the most widely-readable BMP
+     * variant, worth the 1.5x size over staying at RGB565 for something
+     * that only gets downloaded a handful of times for docs/bug reports.
+     * Rows are stored bottom-up and padded to a 4-byte boundary, per the
+     * BMP spec. */
+    uint32_t row_bytes = w * 3;
+    uint32_t row_padded = (row_bytes + 3) & ~3u;
+    uint32_t pixel_data_size = row_padded * h;
+    uint32_t file_size = BMP_HEADER_LEN + pixel_data_size;
+
+    uint8_t *bmp = heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM);
+    if (bmp == NULL) {
+        ESP_LOGE("display", "screenshot: %u byte PSRAM allocation for the BMP failed", (unsigned)file_size);
+        heap_caps_free(snap_data);
+        display_unlock();
+        return false;
+    }
+    memset(bmp, 0, BMP_HEADER_LEN);
+
+    bmp[0] = 'B';
+    bmp[1] = 'M';
+    bmp_put_u32(bmp + 2, file_size);
+    bmp_put_u32(bmp + 10, BMP_HEADER_LEN); /* pixel data offset */
+    bmp_put_u32(bmp + 14, 40);             /* BITMAPINFOHEADER size */
+    bmp_put_u32(bmp + 18, w);
+    bmp_put_u32(bmp + 22, h);              /* positive height = bottom-up rows */
+    bmp_put_u16(bmp + 26, 1);              /* color planes */
+    bmp_put_u16(bmp + 28, 24);             /* bits per pixel */
+    bmp_put_u32(bmp + 34, pixel_data_size);
+
+    for (uint32_t y = 0; y < h; y++) {
+        const uint16_t *src_row = (const uint16_t *)(snap.data + (h - 1 - y) * snap.header.stride);
+        uint8_t *dst_row = bmp + BMP_HEADER_LEN + y * row_padded;
+        for (uint32_t x = 0; x < w; x++) {
+            uint16_t px = src_row[x];
+            uint8_t r5 = (px >> 11) & 0x1F;
+            uint8_t g6 = (px >> 5) & 0x3F;
+            uint8_t b5 = px & 0x1F;
+            dst_row[x * 3 + 0] = (uint8_t)((b5 * 255) / 31); /* B */
+            dst_row[x * 3 + 1] = (uint8_t)((g6 * 255) / 63); /* G */
+            dst_row[x * 3 + 2] = (uint8_t)((r5 * 255) / 31); /* R */
+        }
+    }
+
+    heap_caps_free(snap_data);
+    display_unlock();
+
+    *out_buf = bmp;
+    *out_len = file_size;
+    return true;
+}
+
 static void lvgl_task(void *arg)
 {
     uint32_t delay_ms = HELIOS_LVGL_TASK_MAX_DELAY_MS;
@@ -228,6 +358,15 @@ void display_init(void)
     lv_display_set_user_data(disp, s_panel);
     lv_display_add_event_cb(disp, rounder_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 
+    /* Tried moving these to MALLOC_CAP_SPIRAM with a much bigger (full-
+     * height) size to cut down on flush calls during the swipeable
+     * tileview's page-turn animation - esp_lcd_panel_io_spi's queued color
+     * transmit rejected a PSRAM source outright on real hardware
+     * ("spi transmit (queue) color failed", blank screen). Reverted to
+     * plain MALLOC_CAP_DMA (internal RAM); see HELIOS_LVGL_BUF_LINES above
+     * and the QSPI pclk_hz in panel_init() for the safer levers actually
+     * used against the swipe stutter, and docs/HARDWARE_REFERENCE.md for
+     * the full writeup. */
     size_t buf_size = HELIOS_LCD_H_RES * HELIOS_LVGL_BUF_LINES * LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565);
     void *buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
     void *buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);

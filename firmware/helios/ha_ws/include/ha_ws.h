@@ -61,6 +61,14 @@ typedef struct {
     ha_ws_source_t grid_export;
     ha_ws_source_t battery_charge;
     ha_ws_source_t battery_discharge;
+
+    /* Home Assistant's own idea of itself (Settings -> System -> General),
+     * fetched once via REST right after authentication (not part of the
+     * websocket handshake) and cached here - "" until that lands. Purely
+     * informational, for the /ha settings page ("the instance we found"). */
+    bool instance_info_loaded;
+    char instance_name[64];  /* HA's "location_name" */
+    char instance_state[16]; /* HA's own runtime state - "RUNNING", "STARTING", ... */
 } ha_ws_status_t;
 
 /* Starts the background task owning the whole connection lifecycle:

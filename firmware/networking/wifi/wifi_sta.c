@@ -4,6 +4,7 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_mac.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -18,10 +19,21 @@ static EventGroupHandle_t s_wifi_events;
 #define WIFI_CONNECTED_BIT BIT0
 
 static wifi_sta_connected_cb_t s_connected_cb = NULL;
+static bool s_sntp_started = false; /* helios/irradiance_model needs a real UTC clock for its sun-position math */
 
 void wifi_sta_set_connected_cb(wifi_sta_connected_cb_t cb)
 {
     s_connected_cb = cb;
+}
+
+static void start_sntp_once(void)
+{
+    if (s_sntp_started) {
+        return;
+    }
+    s_sntp_started = true;
+    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_netif_sntp_init(&config); /* async - syncs in the background, no blocking wait here */
 }
 
 static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
@@ -38,6 +50,7 @@ static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *da
         snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&event->ip_info.ip));
         ESP_LOGI(TAG, "connected, ip=%s", ip_str);
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
+        start_sntp_once();
         if (s_connected_cb) {
             s_connected_cb(ip_str);
         }
@@ -93,6 +106,25 @@ bool wifi_sta_wait_connected(int timeout_ms)
     }
     EventBits_t bits = xEventGroupWaitBits(s_wifi_events, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, pdMS_TO_TICKS(timeout_ms));
     return (bits & WIFI_CONNECTED_BIT) != 0;
+}
+
+bool wifi_sta_get_ip(char *out, size_t out_len)
+{
+    if (out != NULL && out_len > 0) {
+        out[0] = '\0';
+    }
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif == NULL) {
+        return false;
+    }
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK || ip_info.ip.addr == 0) {
+        return false;
+    }
+    if (out != NULL) {
+        snprintf(out, out_len, IPSTR, IP2STR(&ip_info.ip));
+    }
+    return true;
 }
 
 void wifi_sta_get_setup_ap_ssid(char *out, size_t out_size)

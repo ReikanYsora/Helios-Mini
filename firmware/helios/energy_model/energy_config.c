@@ -77,6 +77,38 @@ void energy_config_save_format(const energy_format_t *format)
     storage_set_string(NVS_NAMESPACE, "fmt_decimals", buf);
 }
 
+static bool load_page_flag(const char *key)
+{
+    char buf[4] = {0};
+    if (storage_get_string(NVS_NAMESPACE, key, buf, sizeof(buf)) != ESP_OK || buf[0] == '\0') {
+        return true; /* default: every page shown */
+    }
+    return buf[0] == '1';
+}
+
+static void save_page_flag(const char *key, bool value)
+{
+    storage_set_string(NVS_NAMESPACE, key, value ? "1" : "0");
+}
+
+void energy_config_load_pages(energy_page_visibility_t *out)
+{
+    out->show_solar = load_page_flag("page_solar");
+    out->show_irradiance = load_page_flag("page_irrad");
+    out->show_grid = load_page_flag("page_grid");
+    out->show_battery = load_page_flag("page_battery");
+    out->show_consumption = load_page_flag("page_consump");
+}
+
+void energy_config_save_pages(const energy_page_visibility_t *pages)
+{
+    save_page_flag("page_solar", pages->show_solar);
+    save_page_flag("page_irrad", pages->show_irradiance);
+    save_page_flag("page_grid", pages->show_grid);
+    save_page_flag("page_battery", pages->show_battery);
+    save_page_flag("page_consump", pages->show_consumption);
+}
+
 void energy_format_power(float watts, const energy_format_t *format, char *out, size_t out_len)
 {
     energy_format_t local;
