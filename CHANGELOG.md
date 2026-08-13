@@ -224,6 +224,10 @@ All notable changes to Helios Mini will be documented in this file.
   is unchanged and still reachable manually from `/debug/speaker` for
   whenever the sound design resumes deliberately instead of iterating
   blind between flashes.
+- Boot logo halved in size (regenerated at half the rasterization
+  density - `svg_pieces_to_lvgl.py` scales every piece's size and
+  on-screen position together, no animation code changes needed), and
+  shrank the flash footprint further in the process.
 
 ### Verified on hardware (2026-08-11 - 2026-08-12)
 

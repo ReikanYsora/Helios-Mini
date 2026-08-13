@@ -854,6 +854,23 @@ addressed this round.
 
 All rebuilt and reflashed after each change; no crashes throughout.
 
+**Boot logo halved in size.** **User:** "tu vas reduire de 50% la taille
+du logo Helios, je veux que ca fasse tres 'apple' au demarrage, sauf qu'a
+la place de la pomme, c'est le logo Helios, on garde l'animation des
+flammes du soleil." Since `svg_pieces_to_lvgl.py` rasterizes each piece
+at `canvas_px`-per-512-SVG-units and bakes each piece's on-screen offset
+from that same density, regenerating at `canvas_px=220` instead of `440`
+scales every piece's size *and* position together automatically - no
+changes needed in `boot_animation.c` itself. Also shrank the flash
+footprint further (13 pieces at half linear size are a quarter the raw
+pixels). Board briefly stopped responding to `idf.py flash` entirely (zero
+bytes either direction on serial, not just an esptool handshake retry) -
+this board's power rail depends on the firmware re-asserting the GPIO18
+latch quickly after each PWR-button wake (see the very first entry in
+this doc), so anything that drops power without a fresh button press
+leaves it fully unpowered from USB's perspective. Fixed by the user
+pressing PWR again; flashed and verified clean immediately after.
+
 ## Still open (need eyes/ears on the physical board)
 
 - [x] Panel orientation (`MADCTL = 0xC0`) and the doubled boot logo -
