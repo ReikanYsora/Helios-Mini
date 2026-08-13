@@ -45,14 +45,9 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_LWIP_MAX_SOCKETS=16
 
 # LVGL v9 (lvgl/lvgl managed component) configuration via Kconfig.
-CONFIG_LV_COLOR_16_SWAP=y
-CONFIG_LV_COLOR_SCREEN_TRANSP=y
-CONFIG_LV_MEM_CUSTOM=y
-CONFIG_LV_MEMCPY_MEMSET_STD=y
-CONFIG_LV_FONT_MONTSERRAT_16=y
-CONFIG_LV_FONT_MONTSERRAT_24=y
-CONFIG_LV_FONT_MONTSERRAT_32=y
-CONFIG_LV_FONT_MONTSERRAT_48=y
+# All on-screen text uses the Figtree fonts (ui/fonts), so no Montserrat
+# sizes are enabled here - LVGL keeps its built-in Montserrat 14 as the
+# internal LV_FONT_DEFAULT fallback on its own.
 # lv_snapshot_take() - powers /debug's screenshot download (display_take_screenshot_bmp()).
 CONFIG_LV_USE_SNAPSHOT=y
 # lv_qrcode - onboarding QR codes on screen (ui/qr).
