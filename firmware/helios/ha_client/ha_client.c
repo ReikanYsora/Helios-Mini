@@ -1,10 +1,10 @@
 #include "ha_client.h"
+#include "energy_math.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "cJSON.h"
 
 #include <string.h>
-#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -207,13 +207,7 @@ ha_entity_status_t ha_client_get_entity_power(const char *url, const char *token
     char unit[16] = {0};
     ha_entity_status_t status = fetch_entity_state(url, token, entity_id, &raw, unit, sizeof(unit));
     if (status == HA_ENTITY_STATUS_OK && value_out != NULL) {
-        float multiplier = 1.0f;
-        if (strcasecmp(unit, "kW") == 0) {
-            multiplier = 1000.0f;
-        } else if (strcasecmp(unit, "MW") == 0) {
-            multiplier = 1000000.0f;
-        }
-        *value_out = raw * multiplier;
+        *value_out = helios_power_to_watts(raw, unit);
     }
     return status;
 }

@@ -1,6 +1,7 @@
 #include "ha_ws.h"
 #include "ha_client.h"
-#include "storage.h"
+#include "helios_config.h"
+#include "energy_math.h"
 
 #include "esp_websocket_client.h"
 #include "esp_log.h"
@@ -13,15 +14,10 @@
 #include "freertos/semphr.h"
 
 #include <string.h>
-#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 static const char *TAG = "ha_ws";
-/* Same NVS namespace/keys networking/settings_server writes ha_url/ha_token
- * under - duplicated on purpose, same reasoning as helios/energy_model:
- * this component intentionally doesn't depend on settings_server. */
-static const char *NVS_NAMESPACE = "helios_mini";
 
 #define HA_WS_URL_LEN         192
 #define HA_WS_TOKEN_LEN       256
@@ -85,15 +81,6 @@ static char s_started_token[HA_WS_TOKEN_LEN] = {0};
 static char *s_frag_buf = NULL;
 static int s_frag_total = 0;
 static int s_frag_filled = 0;
-
-static bool load_ha_credentials(char *url_out, size_t url_len, char *token_out, size_t token_len)
-{
-    url_out[0] = '\0';
-    token_out[0] = '\0';
-    bool have_url = storage_get_string(NVS_NAMESPACE, "ha_url", url_out, url_len) == ESP_OK && url_out[0] != '\0';
-    bool have_token = storage_get_string(NVS_NAMESPACE, "ha_token", token_out, token_len) == ESP_OK && token_out[0] != '\0';
-    return have_url && have_token;
-}
 
 static void build_ws_url(const char *http_url, char *out, size_t out_len)
 {
@@ -352,7 +339,7 @@ static void handle_result(cJSON *root)
              * cheap and keeps the call chain simple. */
             char url[HA_WS_URL_LEN] = {0};
             char token[HA_WS_TOKEN_LEN] = {0};
-            load_ha_credentials(url, sizeof(url), token, sizeof(token));
+            helios_config_get_ha_credentials(url, sizeof(url), token, sizeof(token));
             apply_energy_prefs(cJSON_GetObjectItemCaseSensitive(root, "result"), url, token);
         } else {
             ESP_LOGW(TAG, "energy/get_prefs request failed");
@@ -400,22 +387,14 @@ static void handle_trigger_event(cJSON *root)
         return; /* not numeric */
     }
 
-    /* Same kW/MW -> W conversion ha_client_get_entity_power() applies to
-     * the REST bootstrap of this same entity. */
-    float multiplier = 1.0f;
+    /* Same kW/MW -> W conversion ha_client applies to the REST bootstrap. */
     const cJSON *attrs = cJSON_GetObjectItemCaseSensitive(to_state, "attributes");
     const cJSON *unit = cJSON_GetObjectItemCaseSensitive(attrs, "unit_of_measurement");
-    if (cJSON_IsString(unit) && unit->valuestring != NULL) {
-        if (strcasecmp(unit->valuestring, "kW") == 0) {
-            multiplier = 1000.0f;
-        } else if (strcasecmp(unit->valuestring, "MW") == 0) {
-            multiplier = 1000000.0f;
-        }
-    }
+    const char *unit_str = (cJSON_IsString(unit) && unit->valuestring != NULL) ? unit->valuestring : NULL;
 
     if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
         sub_entity_t *s = &s_slots[slot].subs[sub];
-        s->power_w = new_value * multiplier;
+        s->power_w = helios_power_to_watts(new_value, unit_str);
         s->last_sample_us = esp_timer_get_time();
         s->live = true;
         xSemaphoreGive(s_mutex);
@@ -610,7 +589,7 @@ static void ha_ws_task(void *arg)
     for (;;) {
         char url[HA_WS_URL_LEN] = {0};
         char token[HA_WS_TOKEN_LEN] = {0};
-        bool have_creds = load_ha_credentials(url, sizeof(url), token, sizeof(token));
+        bool have_creds = helios_config_get_ha_credentials(url, sizeof(url), token, sizeof(token));
 
         if (!have_creds) {
             if (s_client != NULL) {

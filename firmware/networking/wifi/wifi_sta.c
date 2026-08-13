@@ -1,5 +1,6 @@
 #include "wifi_sta.h"
 #include "storage.h"
+#include "helios_config.h"
 
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -13,7 +14,7 @@
 #include <stdio.h>
 
 static const char *TAG = "wifi_sta";
-static const char *NVS_NAMESPACE = "helios_mini";
+static const char *NVS_NAMESPACE = HELIOS_NVS_NAMESPACE;
 
 static EventGroupHandle_t s_wifi_events;
 #define WIFI_CONNECTED_BIT BIT0
@@ -61,7 +62,7 @@ static void load_credentials(wifi_config_t *cfg)
 {
     char ssid[33] = {0};
     char pass[65] = {0};
-    bool have_ssid = storage_get_string(NVS_NAMESPACE, "wifi_ssid", ssid, sizeof(ssid)) == ESP_OK;
+    bool have_ssid = storage_get_string(NVS_NAMESPACE, HELIOS_NVS_KEY_WIFI_SSID, ssid, sizeof(ssid)) == ESP_OK;
 
     if (!have_ssid) {
         /* main.c only calls wifi_sta_start() once provisioning_has_credentials()
@@ -70,7 +71,7 @@ static void load_credentials(wifi_config_t *cfg)
         strncpy(ssid, CONFIG_HELIOS_WIFI_DEV_SSID, sizeof(ssid) - 1);
         strncpy(pass, CONFIG_HELIOS_WIFI_DEV_PASSWORD, sizeof(pass) - 1);
     } else {
-        storage_get_string(NVS_NAMESPACE, "wifi_pass", pass, sizeof(pass));
+        storage_get_string(NVS_NAMESPACE, HELIOS_NVS_KEY_WIFI_PASS, pass, sizeof(pass));
     }
 
     strncpy((char *)cfg->sta.ssid, ssid, sizeof(cfg->sta.ssid) - 1);

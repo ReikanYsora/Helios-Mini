@@ -6,7 +6,7 @@
 /* Starts a small HTTP server on the station interface (the device's normal
  * LAN IP - see ui/animations/network_status.h for how that IP gets shown
  * on screen). A topbar (Helios logo + live Wi-Fi/Home Assistant status
- * icons) and a left sidebar (Network / Home Assistant / Display / Debug)
+ * icons) and a left sidebar (Network / Home Assistant / Display / MQTT / Debug)
  * frame every page - icons are inline MDI SVGs (see mdi_icons.h), the same
  * icon set Home Assistant's own frontend uses, no external requests. Routes:
  *   /                       redirects to /network.
@@ -31,10 +31,12 @@
  *                            Dashboard / Home Assistant not set up at all /
  *                            waiting for a first live update / a live
  *                            value (flagged stale if it stops updating).
- *   /debug and its sub-paths hardware self-tests (screen/speaker/microphone)
- *                            plus a live system status snapshot
- *                            (diagnostics). No gyroscope test - this board
- *                            doesn't have one.
+ *   /mqtt, /mqtt/save       Optional MQTT bridge: exposes on-device
+ *                            controls/diagnostics to Home Assistant as
+ *                            auto-discovered MQTT entities (helios/mqtt_bridge).
+ *   /debug and its sub-paths live system status (uptime/heap/PSRAM/Wi-Fi
+ *                            RSSI), a screenshot download, and a factory
+ *                            reset (diagnostics).
  *
  * This replaces the discovery/pairing custom-integration flow originally
  * sketched in spec Sections 17-18: instead of Helios Mini being discovered
@@ -47,7 +49,3 @@
  * before the connection actually completes, since starting the server
  * doesn't require an IP yet. */
 void settings_server_start(void);
-
-/* Reads the stored Home Assistant URL/token, if both are set. Returns
- * false (and leaves the buffers empty) otherwise. */
-bool settings_get_ha_config(char *url_out, size_t url_len, char *token_out, size_t token_len);

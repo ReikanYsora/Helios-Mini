@@ -1,7 +1,3 @@
-/* mdns_result_t field names below have not been compiled against the
- * resolved espressif/mdns component version yet at the time of writing -
- * verify on first build (same discipline as the es8311/button surprises,
- * see docs/HARDWARE_REFERENCE.md). */
 #include "ha_discovery.h"
 #include "mdns.h"
 #include "esp_log.h"

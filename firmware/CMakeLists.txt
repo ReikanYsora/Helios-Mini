@@ -2,9 +2,9 @@
 # https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html
 cmake_minimum_required(VERSION 3.16)
 
-# Our components live nested under hardware/, networking/, ui/ instead of a
-# flat components/ directory (mirrors docs/SPEC.md Section 20). Each path
-# below is a leaf component directory (contains its own CMakeLists.txt).
+# Our components live nested under hardware/, networking/, helios/, ui/
+# instead of a flat components/ directory. Each path below is a leaf
+# component directory (contains its own CMakeLists.txt).
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/hardware/board_config"
     "${CMAKE_CURRENT_LIST_DIR}/hardware/power"
@@ -17,6 +17,8 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/networking/settings_server"
     "${CMAKE_CURRENT_LIST_DIR}/networking/http_forms"
     "${CMAKE_CURRENT_LIST_DIR}/networking/ha_discovery"
+    "${CMAKE_CURRENT_LIST_DIR}/helios/config"
+    "${CMAKE_CURRENT_LIST_DIR}/helios/energy_math"
     "${CMAKE_CURRENT_LIST_DIR}/helios/ha_client"
     "${CMAKE_CURRENT_LIST_DIR}/helios/ha_ws"
     "${CMAKE_CURRENT_LIST_DIR}/helios/energy_model"

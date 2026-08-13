@@ -1,5 +1,6 @@
 #include "mqtt_bridge.h"
 #include "storage.h"
+#include "helios_config.h"
 #include "display.h"
 #include "diagnostics.h"
 #include "irradiance_model.h"
@@ -21,7 +22,7 @@
 #include <stdlib.h>
 
 static const char *TAG = "mqtt_bridge";
-static const char *NVS_NAMESPACE = "helios_mini";
+static const char *NVS_NAMESPACE = HELIOS_NVS_NAMESPACE;
 
 #define MQTT_TASK_STACK       4096
 #define MQTT_TASK_PRIORITY    3

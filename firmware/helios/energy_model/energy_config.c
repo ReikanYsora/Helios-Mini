@@ -1,10 +1,12 @@
 #include "energy_config.h"
 #include "storage.h"
+#include "helios_config.h"
+#include "energy_math.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 
-static const char *NVS_NAMESPACE = "helios_mini";
+static const char *NVS_NAMESPACE = HELIOS_NVS_NAMESPACE;
 
 static float load_limit(const char *key, float fallback)
 {
@@ -116,9 +118,5 @@ void energy_format_power(float watts, const energy_format_t *format, char *out, 
         energy_config_load_format(&local);
         format = &local;
     }
-    if (format->use_kw) {
-        snprintf(out, out_len, "%.*f kW", format->decimals, watts / 1000.0f);
-    } else {
-        snprintf(out, out_len, "%.*f W", format->decimals, watts);
-    }
+    helios_format_power(watts, format->use_kw, format->decimals, out, out_len);
 }

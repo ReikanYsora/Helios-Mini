@@ -2,7 +2,7 @@
 
 ESP-IDF firmware for the Waveshare ESP32-S3-Touch-AMOLED-1.32, targeting the
 **V0.1 — Hardware Bring-Up** milestone from `docs/SPEC.md` (Section 34):
-display, touch, Wi-Fi, speaker, microphone, buttons, USB — plus, ahead of
+display, touch, Wi-Fi, buttons, and USB — plus, ahead of
 schedule, the Wi-Fi provisioning slice of **V0.2** (spec Section 16): a
 SoftAP + browser setup page, no more hardcoded dev credentials required.
 
@@ -13,8 +13,8 @@ the IP permanently shown on screen) that can find Home Assistant on the LAN
 via mDNS, takes a URL + a Long-Lived Access Token, and tests the connection
 immediately — simpler to build and to use, at the cost of one manual step
 (generating the token in HA) instead of a one-tap pairing button. The same
-server also has a `/debug` page with hardware self-tests (screen, speaker,
-microphone). See "Home Assistant settings" below. The Helios UI, OTA, and
+server also has a `/debug` page with a live status snapshot, a screenshot
+download, and a factory reset. See "Home Assistant settings" below. The Helios UI, OTA, and
 full diagnostics come in later versions.
 
 ## Status: running on hardware, Wi-Fi setup verified end-to-end
@@ -22,8 +22,7 @@ full diagnostics come in later versions.
 Builds with **zero errors and zero warnings** against ESP-IDF 5.5.1
 (`idf.py set-target esp32s3 && idf.py build`, verified with the actual
 resolved managed-component versions: `lvgl/lvgl 9.5.0`,
-`espressif/esp_lcd_sh8601 2.0.1~1`, `espressif/button 4.2.0`,
-`espressif/es8311 1.0.0~1`).
+`espressif/esp_lcd_sh8601 2.0.1~1`, `espressif/button 4.2.0`).
 
 Two crashes were hit and fixed on the very first hardware runs (both are
 now confirmed fixed on real hardware — full root cause and fixes in
@@ -61,32 +60,14 @@ The old `idf.py menuconfig` dev-SSID fallback (`hardware/networking/wifi`,
 the normal flow — `main.c` only calls `wifi_sta_start()` once credentials
 are already confirmed present.
 
-Two of the API-surface risks flagged during the initial skeleton write
-turned out to be real and are now fixed in code:
-
-- **`espressif/es8311` uses the legacy `driver/i2c.h` API**
-  (`es8311_create(i2c_port_t, uint16_t)`), not the new
-  `i2c_master_bus_handle_t`. Since the codec shares its I2C bus/pins with
-  the touch controller, `hardware/i2c_bus` and `hardware/touch` were
-  switched to the legacy driver too (a bus/port can only be owned by one
-  driver generation at a time). See `docs/HARDWARE_REFERENCE.md`.
-- **`espressif/button`'s real API** is `iot_button_new_gpio_device()` /
-  `iot_button_register_cb(handle, event, event_args, cb, usr_data)` — not
-  the `button_config_t.type/gpio_button_config` shape guessed originally.
-  `ES8311_ADDRRES_0` (the codec I2C address constant, typo and all) was a
-  correct guess.
+`hardware/i2c_bus` and `hardware/touch` use the legacy `driver/i2c.h` API
+(see `docs/HARDWARE_REFERENCE.md`); migrating to `driver/i2c_master.h` is a
+deferred candidate. `espressif/button`'s real API is
+`iot_button_new_gpio_device()` / `iot_button_register_cb(...)`.
 
 Panel orientation and the doubled boot logo are confirmed good on hardware.
-The startup chime went through two redesigns based on listening to the
-real hardware — silent (I2S mono-slot mode) → audible but "sounds like an
-ocean liner foghorn" (a 4-note chord beats against itself on a small
-speaker) → a sequential rising arpeggio — and the user's verdict on the
-arpeggio was still "absolutely awful." Rather than keep iterating blind,
-**the automatic chime is disabled on boot** (`main.c` no longer calls it);
-`audio_play_startup_tone()` is untouched and still reachable manually from
-`/debug/speaker` for whenever the sound design resumes. Touch and the
-microphone level test are still completely untried. Full story in
-`docs/HARDWARE_REFERENCE.md`.
+Audio was removed from the product: poor sound quality on the small
+speaker, and dropping it frees enclosure space. No I2S/codec code remains.
 
 ### The settings app: topbar, sidebar, Home Assistant, debug tools
 
@@ -123,10 +104,8 @@ external requests, no icon font):
   updating). "Rescan" re-reads Home Assistant's config on demand (after
   the user edits it there). Below that, the ring-limits form (4 numbers,
   Helios Mini's own display preference, saved via `/display/save`).
-- **Debug** (`/debug` and sub-paths) — live system status
-  (uptime/heap/PSRAM/Wi-Fi RSSI) plus buttons to flash the screen, play
-  the startup chime, and measure the microphone's peak level. No
-  gyroscope test - this board doesn't have one.
+- **Debug** (`/debug`) — live system status (uptime/heap/PSRAM/Wi-Fi RSSI),
+  a screenshot download, and a factory reset.
 
 Verified live: fetched all four pages over the LAN with `curl` (200s,
 each response checked to actually end in `</html>`, not just tag-balance
@@ -231,8 +210,8 @@ idf.py -p <port> flash monitor
 ```
 
 The component manager fetches `lvgl/lvgl`, `espressif/esp_lcd_sh8601`,
-`espressif/button`, `espressif/es8311`, `espressif/mdns`, and
-`espressif/esp_websocket_client` automatically, pinned to the verified
+`espressif/button`, `espressif/mdns`, and `espressif/esp_websocket_client`
+automatically, pinned to the verified
 versions in `firmware/dependencies.lock` (committed; cached copies land
 in `managed_components/`, not committed — see `.gitignore`).
 
@@ -249,11 +228,10 @@ firmware/
 ├── hardware/
 │   ├── board_config/      pin map (header-only)
 │   ├── power/              power-latch GPIO18 (must assert early, see HARDWARE_REFERENCE.md)
-│   ├── i2c_bus/            shared I2C bus (touch + audio codec)
+│   ├── i2c_bus/            I2C bus (CST820 touch)
 │   ├── touch/              CST820 driver
 │   ├── display/            QSPI CO5300 bring-up + LVGL v9 port
-│   ├── buttons/            BOOT/PWR via espressif/button
-│   └── audio/              I2S + PA enable + ES8311
+│   └── buttons/            BOOT/PWR via espressif/button
 ├── networking/
 │   ├── wifi/               STA connect + setup-AP toggle, NVS credentials + dev Kconfig fallback
 │   ├── provisioning/       SoftAP + HTTP setup portal (spec Section 16 slice)

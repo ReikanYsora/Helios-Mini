@@ -36,16 +36,17 @@ Panel: 466×466, RGB565, `esp_lcd_panel_io_spi` in quad mode, 40 MHz pixel
 clock, 32-bit LCD command width / 8-bit parameter width (QSPI addressing
 quirk of this controller family, not a typo).
 
-## I2C bus — touch + audio codec (shared)
+## I2C bus — touch
 
-Touch (CST820) and the audio codec (ES8311) sit on the **same** I2C bus.
+Touch (CST820) is on `I2C_NUM_0`. The board's ES8311 audio codec shares the
+same lines but is unused (no audio).
 
 | Signal | GPIO |
 |--------|------|
 | SDA    | 47   |
 | SCL    | 48   |
 | Port   | `I2C_NUM_0` |
-| Speed  | 300 kHz (touch); confirm codec can run at the same bus speed before sharing a single init |
+| Speed  | 300 kHz |
 
 ### Touch — CST820
 
@@ -59,21 +60,12 @@ Gesture/position registers read directly (no `esp_lcd_touch` framework used
 by the vendor): gesture count at `0x02` (2 bytes), position at `0x03`
 (4 bytes) — `x = (Gpos[0] & 0x0F) << 8 | Gpos[1]`, `y = (Gpos[2] & 0x0F) << 8 | Gpos[3]`.
 
-## Audio — ES8311 codec + speaker
+## Audio (present on board, unused)
 
-From the vendor's `codec_board` board profile for `S3_AMOLED_1_32`:
-
-| Signal | GPIO |
-|--------|------|
-| I2S MCLK | 38 |
-| I2S BCLK | 39 |
-| I2S WS (LRCK) | 41 |
-| I2S DIN (codec → ESP, mic path) | 40 |
-| I2S DOUT (ESP → codec, speaker path) | 42 |
-| PA enable | 46 |
-| Codec I2C addr | shares the touch I2C bus (SDA 47 / SCL 48) |
-
-`use_mclk: 1` — the codec needs the MCLK line driven (not MCLK-less mode).
+The board carries an ES8311 codec, microphone, and speaker connector on an
+I2S interface (pin assignments in the vendor's `codec_board` profile for
+`S3_AMOLED_1_32`). Helios Mini does not use audio: no I2S/codec pins are
+defined in `board_config.h` and no audio code is built.
 
 ## Buttons
 
@@ -100,23 +92,17 @@ Helios Mini — no battery in the commercial configuration (spec §4.1).
 - PSRAM: enabled, octal mode
 - Managed components, as resolved and pinned in `firmware/dependencies.lock`:
   `lvgl/lvgl 9.5.0`, `espressif/esp_lcd_sh8601 2.0.1~1`,
-  `espressif/button 4.2.0`, `espressif/es8311 1.0.0~1`
+  `espressif/button 4.2.0`
 
 ## Build-verified (2026-08-10)
 
-`idf.py build` against ESP-IDF 5.5.1 succeeds with zero errors/warnings,
-resolving `lvgl/lvgl 9.5.0`, `espressif/esp_lcd_sh8601 2.0.1~1`,
-`espressif/button 4.2.0`, `espressif/es8311 1.0.0~1` (pinned in
-`firmware/dependencies.lock`, committed for reproducibility). Two guessed
-API surfaces turned out wrong and are now fixed in code; see
-`firmware/README.md` for the summary. Notably:
+`idf.py build` against ESP-IDF 5.5.1 succeeds with zero errors/warnings
+(managed components pinned in `firmware/dependencies.lock`). Two API
+surfaces worth recording:
 
-- **`espressif/es8311`'s `es8311_create()` takes the legacy `i2c_port_t`**,
-  not a `i2c_master_bus_handle_t`. Because the codec shares its physical
-  I2C bus/pins with the touch controller, and a port can only be owned by
-  one driver generation at a time, `hardware/i2c_bus` and `hardware/touch`
-  were both moved to the legacy `driver/i2c.h` API to match. This is the
-  resolution to the "shared bus" open question below.
+- `hardware/i2c_bus` and `hardware/touch` use the legacy `driver/i2c.h` API
+  rather than `driver/i2c_master.h`; migrating to the modern driver is a
+  deferred candidate (needs hardware revalidation).
 - **`espressif/button`'s real entry point is `iot_button_new_gpio_device()`**
   (`button_config_t` only holds press-timing fields; GPIO config is a
   separate `button_gpio_config_t` passed alongside it), and
@@ -124,8 +110,6 @@ API surfaces turned out wrong and are now fixed in code; see
   `button_event_args_t *` (pass `NULL` for click/long-press events).
 - `LV_IMAGE_DECLARE`, `lv_image_create`, `lv_obj_set_style_image_opa` (LVGL
   v9 API used in `ui/animations`) compiled as written against 9.5.0.
-- `ES8311_ADDRRES_0` (the codec I2C address constant, typo and all) is
-  real, defined in `es8311.h` for backward compatibility.
 
 ## Wi-Fi provisioning (added 2026-08-10)
 
@@ -175,7 +159,7 @@ connected in station mode — full round trip, no crash, got a real DHCP
 lease (`192.168.0.45`) on the target network. This is the first fully
 successful end-to-end run of V0.1 + the V0.2 Wi-Fi-provisioning slice.
 
-## Display orientation, audio, and HA-settings changes (2026-08-11)
+## Display orientation and HA-settings changes (2026-08-11)
 
 Feedback from looking at the flashed device on the desk:
 
@@ -189,11 +173,6 @@ Feedback from looking at the flashed device on the desk:
   itself is still unverified either way (see below).
 - **Boot logo doubled** (220px -> 440px) via
   `tools/asset-gen/svg_to_lvgl.py ... 440 ...`.
-- **Startup tone added** (`hardware/audio`'s `audio_play_startup_tone()`):
-  a synthesized 880Hz chime with a fade envelope, no audio asset needed,
-  written straight to the I2S TX channel. Confirms the speaker path
-  end-to-end. Not yet confirmed audible - needs eyes/ears on the device,
-  not just a clean serial log.
 - **Persistent on-screen IP** (`ui/animations/network_status.c`): once
   station mode gets an IP, the screen switches to "Helios Mini /
   `http://<ip>/`" and stays there - wired via a new `wifi_sta_set_connected_cb()`
@@ -213,9 +192,8 @@ Feedback from looking at the flashed device on the desk:
 Verified: builds clean, flashes, boots without crashing, reconnects to the
 already-provisioned network automatically, `settings_server` is reachable
 (a browser already hit it and got a normal 404 for `/favicon.ico`). Visual
-confirmation of the rotation fix and logo size, and audible confirmation of
-the startup tone, are pending - need the user looking at/listening to the
-actual device.
+confirmation of the rotation fix and logo size are pending - need the user
+looking at the actual device.
 
 ## Home Assistant discovery, token validation, debug page (2026-08-11)
 
@@ -226,10 +204,8 @@ Three more pieces added on top of `settings_server`:
   using the `espressif/mdns` managed component. Exposed at `/scan` on the
   settings server; picking a result prefills the URL field but still
   requires pressing Save (no silent auto-connect). The `mdns_result_t`
-  field names used in `ha_discovery.c` were guesses when written (same
-  situation as the es8311/button surprises earlier) but **compiled clean
-  on the first try** against the resolved `espressif/mdns 1.11.3` - no
-  fixes needed here, unlike those two.
+  field names used in `ha_discovery.c` **compiled clean on the first try**
+  against the resolved `espressif/mdns 1.11.3`.
 - **`helios/ha_client`**: a REST call to `<url>/api/` with the token as a
   Bearer credential, used both right after Save and from a "Test
   connection again" link. This is the *entire* extent of the Home
@@ -240,14 +216,9 @@ Three more pieces added on top of `settings_server`:
   token (401/403) whenever it's actually used, and tell the user to
   generate a fresh one - the only thing actually possible here.
 - **`/debug`** on the settings server: a live system status line
-  (`diagnostics_get_status()`) plus three hardware self-tests
-  (`diagnostics_test_screen/speaker/microphone()`) - flash a few colors,
-  play the startup tone, report peak microphone level. No gyroscope test:
-  **this board doesn't have one.** Confirmed by checking Waveshare's own
-  example repo for this exact board (`ESP32-S3-Touch-AMOLED-1.32`) - no
-  IMU/gyro example anywhere in it, unlike some other Waveshare AMOLED
-  variants (e.g. the 1.8" one) whose product listings do advertise one.
-  Said so explicitly on the debug page rather than omitting it silently.
+  (`diagnostics_get_status()`) plus a screen self-test. No gyroscope test:
+  **this board doesn't have one** (confirmed against Waveshare's own example
+  repo for this exact board - no IMU/gyro example anywhere in it).
 
 **Verified live on hardware, by the user testing through a browser while
 this was being watched over serial** (not just a clean log - actual
@@ -265,67 +236,6 @@ Known rough edges, not yet addressed:
   ~3s) - acceptable for a manually-triggered button, would need to become
   asynchronous if it were ever auto-triggered on page load.
 
-## Speaker was silent - I2S mono slot mode (2026-08-11)
-
-User feedback after this round: display, Wi-Fi, mDNS, and the settings
-server all confirmed working live - but no sound from the startup tone.
-
-`hardware/audio` configured the I2S bus with
-`I2S_SLOT_MODE_MONO`. Re-checked Waveshare's own audio reference for this
-exact board (`Example/ESP-IDF/05_Audio_Test`) and it always opens the
-ES8311 with `channel = 2` (stereo), even though the board only has one
-speaker. Most inexpensive I2S DAC/ADC codecs, ES8311 included, only
-implement the full stereo Philips frame; ESP-IDF's I2S "mono slot" mode
-sends just one slot per LRCK cycle, which this class of codec doesn't
-handle and reads as silence rather than falling back to something audible.
-
-Fixed by switching to `I2S_SLOT_MODE_STEREO` and duplicating each mono
-sample onto both L/R slots when writing
-(`audio_play_startup_tone()`)/reading (`audio_measure_mic_level()`,
-peak taken across both slots regardless of which one is real).
-
-**Confirmed on hardware**: audible, but a very quiet, very short "plouc" -
-the stereo fix was the right call, the sound itself (single 880Hz tone,
-180ms, amplitude 6000/32767) was just underwhelming as a product sound.
-
-## Startup chime redesign, attempt 1 - simultaneous chord (2026-08-11)
-
-Replaced the single debug beep with a four-voice "sunrise" chord swell (F
-major - root/third/fifth + an octave-up shimmer voice, all four sounding
-*at once*), staggered entrances, ~1.2s total, ES8311 volume raised 70->92.
-
-**User verdict: "sounds like an ocean liner foghorn."** Root cause:
-playing several tones simultaneously on a small single-driver speaker
-produces audible beat frequencies between the close-together tones (349Hz
-vs 440Hz beats at 91Hz, 440 vs 523 at 83Hz, etc.) - right in the "foghorn
-wah-wah" perceptual range, and a small speaker's nonlinearity has no
-headroom to keep a 4-note stack clean regardless.
-
-## Startup chime redesign, attempt 2 - sequential arpeggio (2026-08-11)
-
-Replaced the chord with a **rising arpeggio**: the same four F-major notes
-(F4, A4, C5, F5), but played **one at a time** (130/130/140/420ms, the
-last one held with a graceful release; ~820ms total) - never more than one
-tone sounding, so there is nothing left to beat against. Each note has its
-own short raised-cosine attack (12ms) and release that reaches exactly 0
-at the note's own end, so transitions between notes are click-free without
-needing to matching phase across different frequencies. Volume backed off
-from 92 to 85 (up from the original 70, short of the 92 that may have been
-part of what pushed the chord into distortion too). Single voice at a
-time, so headroom is less of a concern than it was for the stacked chord.
-
-Builds clean, boots without crashing (the ~820ms delay before Wi-Fi
-connect in the boot log is this chime playing synchronously, shorter than
-attempt 1's ~1.2s, as expected).
-
-**User verdict: still "absolutely awful."** Rather than attempt a third
-redesign blind, the automatic startup chime is **disabled** for now
-(`main.c` no longer calls `audio_play_startup_tone()` on boot) so it stops
-interrupting testing/waking the household. `audio_play_startup_tone()`
-itself is untouched and still reachable manually from `/debug/speaker` on
-the settings server, for whenever sound design work on it resumes
-deliberately instead of iterating blind between builds.
-
 ## Web UI redesign: topbar + sidebar, MDI icons, AP toggle (2026-08-12)
 
 Replaced the single flat settings page with an actual small app shell,
@@ -342,7 +252,7 @@ consistent with every other page on this device):
   highlighted. Collapses to icons-only below 640px width (pure CSS media
   query, no JS) so it stays usable on a phone.
 - **Icons are real MDI** (Material Design Icons - `wifi`, `home-assistant`,
-  `lan`, `bug`, `magnify`, `monitor`, `volume-high`, `microphone`,
+  `lan`, `bug`, `magnify`, `monitor`,
   `access-point`/`access-point-off`, `refresh`, `content-save`), the same
   icon set Home Assistant's own frontend uses. Path data extracted directly
   from the `@mdi/js` package in the user's local `ha-frontend` checkout
@@ -875,10 +785,6 @@ pressing PWR again; flashed and verified clean immediately after.
 
 - [x] Panel orientation (`MADCTL = 0xC0`) and the doubled boot logo -
       confirmed good by the user (2026-08-11).
-- [x] Startup chime is audible (speaker path itself works, confirmed via
-      two rounds of user listening) - **disabled on boot anyway**, pending
-      a sound design that isn't "absolutely awful"; still reachable at
-      `/debug/speaker` for whenever that resumes.
 - [ ] Confirm the power-on white flash is actually gone now - the real
       cause (full brightness baked into `s_lcd_init_cmds[]` itself, well
       before the panel is even unblanked) was fixed this session, but
@@ -890,9 +796,6 @@ pressing PWR again; flashed and verified clean immediately after.
       the IP notice is skipped whenever HA credentials are saved (see
       "V1 round" above), with no fallback screen if that trust turns out
       to be misplaced. Not hit in practice yet, flagged as a real gap.
-- [ ] Confirm the microphone level test (`/debug/mic`) actually responds to
-      real sound - the stereo-mode fix applies to the RX path too but
-      hasn't been tried at all yet, silent or not.
 - [ ] Visual review of the new `/network`, `/ha`, `/debug` pages (topbar,
       sidebar, icons, AP toggle) - only checked so far via `curl` and tag
       counting, not by a human actually looking at it in a browser.

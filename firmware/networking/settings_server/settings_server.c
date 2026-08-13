@@ -1,5 +1,6 @@
 #include "settings_server.h"
 #include "storage.h"
+#include "helios_config.h"
 #include "http_forms.h"
 #include "ha_client.h"
 #include "ha_discovery.h"
@@ -23,7 +24,6 @@
 #include <stdlib.h>
 
 static const char *TAG = "settings_server";
-static const char *NVS_NAMESPACE = "helios_mini";
 
 #define SETTINGS_MAX_FORM_LEN     512
 #define SETTINGS_HA_URL_LEN       128
@@ -33,25 +33,16 @@ static const char *NVS_NAMESPACE = "helios_mini";
 
 /* ---- persisted HA config/status - unchanged from before this UI pass ---- */
 
-bool settings_get_ha_config(char *url_out, size_t url_len, char *token_out, size_t token_len)
-{
-    url_out[0] = '\0';
-    token_out[0] = '\0';
-    bool have_url = storage_get_string(NVS_NAMESPACE, "ha_url", url_out, url_len) == ESP_OK && url_out[0] != '\0';
-    bool have_token = storage_get_string(NVS_NAMESPACE, "ha_token", token_out, token_len) == ESP_OK && token_out[0] != '\0';
-    return have_url && have_token;
-}
-
 static ha_client_status_t get_stored_status(void)
 {
     char key[16] = {0};
-    storage_get_string(NVS_NAMESPACE, "ha_status", key, sizeof(key));
+    storage_get_string(HELIOS_NVS_NAMESPACE, HELIOS_NVS_KEY_HA_STATUS, key, sizeof(key));
     return ha_client_status_from_key(key);
 }
 
 static void store_status(ha_client_status_t status)
 {
-    storage_set_string(NVS_NAMESPACE, "ha_status", ha_client_status_key(status));
+    storage_set_string(HELIOS_NVS_NAMESPACE, HELIOS_NVS_KEY_HA_STATUS, ha_client_status_key(status));
 }
 
 /* ---- page shell: topbar (logo + connection status) + sidebar nav ---- */
@@ -342,7 +333,7 @@ static esp_err_t ha_get_handler(httpd_req_t *req)
 {
     char url[SETTINGS_HA_URL_LEN] = {0};
     char token[SETTINGS_HA_TOKEN_LEN] = {0};
-    bool configured = settings_get_ha_config(url, sizeof(url), token, sizeof(token));
+    bool configured = helios_config_get_ha_credentials(url, sizeof(url), token, sizeof(token));
 
     /* A /ha/scan pick arrives as "/ha?ha_url=..." - prefill without saving
      * yet, the user still has to press Save (no silent auto-connect). */
@@ -443,10 +434,10 @@ static esp_err_t ha_save_post_handler(httpd_req_t *req)
     http_form_get(body, "ha_token", token, sizeof(token));
 
     if (url[0] != '\0') {
-        storage_set_string(NVS_NAMESPACE, "ha_url", url);
+        storage_set_string(HELIOS_NVS_NAMESPACE, HELIOS_NVS_KEY_HA_URL, url);
     }
     if (token[0] != '\0') {
-        storage_set_string(NVS_NAMESPACE, "ha_token", token);
+        storage_set_string(HELIOS_NVS_NAMESPACE, HELIOS_NVS_KEY_HA_TOKEN, token);
     }
 
     /* Re-read what's actually stored (a save with only one field filled in
@@ -454,7 +445,7 @@ static esp_err_t ha_save_post_handler(httpd_req_t *req)
      * not silence" per how this project wants things built. */
     char stored_url[SETTINGS_HA_URL_LEN] = {0};
     char stored_token[SETTINGS_HA_TOKEN_LEN] = {0};
-    settings_get_ha_config(stored_url, sizeof(stored_url), stored_token, sizeof(stored_token));
+    helios_config_get_ha_credentials(stored_url, sizeof(stored_url), stored_token, sizeof(stored_token));
     ha_client_status_t status = ha_client_test_connection(stored_url, stored_token);
     store_status(status);
 
@@ -473,7 +464,7 @@ static esp_err_t ha_test_get_handler(httpd_req_t *req)
 {
     char url[SETTINGS_HA_URL_LEN] = {0};
     char token[SETTINGS_HA_TOKEN_LEN] = {0};
-    settings_get_ha_config(url, sizeof(url), token, sizeof(token));
+    helios_config_get_ha_credentials(url, sizeof(url), token, sizeof(token));
     store_status(ha_client_test_connection(url, token));
 
     httpd_resp_set_status(req, "302 Found");
@@ -615,7 +606,7 @@ static esp_err_t display_get_handler(httpd_req_t *req)
 
     char ha_url[SETTINGS_HA_URL_LEN] = {0};
     char ha_token[SETTINGS_HA_TOKEN_LEN] = {0};
-    bool ha_ready = settings_get_ha_config(ha_url, sizeof(ha_url), ha_token, sizeof(ha_token));
+    bool ha_ready = helios_config_get_ha_credentials(ha_url, sizeof(ha_url), ha_token, sizeof(ha_token));
 
     ha_ws_status_t ws;
     ha_ws_get_status(&ws);
@@ -1072,7 +1063,7 @@ static esp_err_t debug_hard_reset_confirm_handler(httpd_req_t *req)
 
 static esp_err_t debug_hard_reset_post_handler(httpd_req_t *req)
 {
-    esp_err_t err = storage_erase_all(NVS_NAMESPACE);
+    esp_err_t err = storage_erase_all(HELIOS_NVS_NAMESPACE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "hard reset: storage_erase_all failed: %s", esp_err_to_name(err));
     }

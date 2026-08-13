@@ -6,6 +6,7 @@
 #include "wifi_sta.h"
 #include "provisioning.h"
 #include "settings_server.h"
+#include "helios_config.h"
 #include "energy_model.h"
 #include "irradiance_model.h"
 #include "energy_rings.h"
@@ -78,7 +79,7 @@ void app_main(void)
          * ready instead. */
         char ha_url[128] = {0};
         char ha_token[256] = {0};
-        bool ha_already_configured = settings_get_ha_config(ha_url, sizeof(ha_url), ha_token, sizeof(ha_token));
+        bool ha_already_configured = helios_config_get_ha_credentials(ha_url, sizeof(ha_url), ha_token, sizeof(ha_token));
         s_show_ip_notice = !ha_already_configured;
         wifi_sta_set_connected_cb(on_wifi_got_ip);
         wifi_sta_start();

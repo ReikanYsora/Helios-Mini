@@ -16,6 +16,7 @@ idf_component_register(
         mqtt_bridge
         home
         storage
+        config
         diagnostics
         animations
 )

@@ -1,5 +1,7 @@
 #include "energy_model.h"
 #include "energy_config.h"
+#include "helios_config.h"
+#include "energy_math.h"
 #include "ha_ws.h"
 #include "energy_rings.h"
 #include "irradiance_model.h"
@@ -25,13 +27,6 @@
                                          * as "not really happening" rather than flickering
                                          * between the two on noise */
 
-/* Same colors as the parent Helios HA card's chip-appearance.ts. */
-#define COLOR_SOLAR              0xff9800
-#define COLOR_IRRADIANCE         0xffc107
-#define COLOR_GRID_IMPORT        0x488fc2
-#define COLOR_GRID_EXPORT        0x8353d1
-#define COLOR_BATTERY_CHARGE     0xf06292
-#define COLOR_BATTERY_DISCHARGE  0x4db6ac
 /* Irradiance's 0-100% reference: 1000 W/m^2 is Standard Test Conditions
  * (STC) peak sun, the same denominator Helios's own computePvPower() uses
  * (irradiance/10) - a physical constant, not a per-system capacity, so
@@ -45,20 +40,6 @@ static bool s_rings_shown = false;
  * gets picked up as a rebuild without tearing the whole screen down and
  * rebuilding it every 3s render tick for no reason. */
 static energy_page_visibility_t s_shown_pages;
-
-static float clamp_percent(float value_w, float max_w)
-{
-    if (max_w <= 0.0f) {
-        return 0.0f;
-    }
-    float pct = (value_w / max_w) * 100.0f;
-    if (pct < 0.0f) {
-        pct = 0.0f;
-    } else if (pct > 100.0f) {
-        pct = 100.0f;
-    }
-    return pct;
-}
 
 static bool source_has_value(const ha_ws_source_t *s)
 {
@@ -142,9 +123,9 @@ static void render(void)
 
     display.solar.visible = ws.solar.status != HA_WS_SOURCE_NOT_CONFIGURED;
     display.solar.status = map_status(ws.solar.status);
-    display.solar.color_hex = COLOR_SOLAR;
+    display.solar.color_hex = HELIOS_COLOR_SOLAR;
     bool solar_live = source_has_value(&ws.solar);
-    display.solar.percent = solar_live ? clamp_percent(ws.solar.power_w, limits.max_solar_w) : 0.0f;
+    display.solar.percent = solar_live ? helios_clamp_percent(ws.solar.power_w, limits.max_solar_w) : 0.0f;
     if (solar_live) {
         energy_format_power(ws.solar.power_w, &format, display.solar.value_text, sizeof(display.solar.value_text));
     }
@@ -156,8 +137,8 @@ static void render(void)
     irradiance_reading_t irr = irradiance_model_get();
     display.irradiance.visible = irr.status != IRRADIANCE_NOT_CONFIGURED;
     display.irradiance.status = map_irradiance_status(irr.status);
-    display.irradiance.color_hex = COLOR_IRRADIANCE;
-    display.irradiance.percent = (irr.status == IRRADIANCE_LIVE) ? clamp_percent(irr.wm2, IRRADIANCE_STC_WM2) : 0.0f;
+    display.irradiance.color_hex = HELIOS_COLOR_IRRADIANCE;
+    display.irradiance.percent = (irr.status == IRRADIANCE_LIVE) ? helios_clamp_percent(irr.wm2, IRRADIANCE_STC_WM2) : 0.0f;
     if (irr.status == IRRADIANCE_LIVE) {
         snprintf(display.irradiance.value_text, sizeof(display.irradiance.value_text), "%.0f W/m2", (double)irr.wm2);
         snprintf(display.irradiance.direction_label, sizeof(display.irradiance.direction_label), "%.0f%% cloud",
@@ -179,16 +160,16 @@ static void render(void)
                            ? (export_w > import_w && export_w > ENERGY_ACTIVE_THRESHOLD_W)
                            : export_configured;
     if (use_export) {
-        display.grid.color_hex = COLOR_GRID_EXPORT;
-        display.grid.percent = clamp_percent(export_w, limits.max_grid_export_w);
+        display.grid.color_hex = HELIOS_COLOR_GRID_EXPORT;
+        display.grid.percent = helios_clamp_percent(export_w, limits.max_grid_export_w);
         display.grid.status = map_status(ws.grid_export.status);
         strncpy(display.grid.direction_label, "Export", sizeof(display.grid.direction_label) - 1);
         if (source_has_value(&ws.grid_export)) {
             energy_format_power(export_w, &format, display.grid.value_text, sizeof(display.grid.value_text));
         }
     } else {
-        display.grid.color_hex = COLOR_GRID_IMPORT;
-        display.grid.percent = clamp_percent(import_w, limits.max_grid_import_w);
+        display.grid.color_hex = HELIOS_COLOR_GRID_IMPORT;
+        display.grid.percent = helios_clamp_percent(import_w, limits.max_grid_import_w);
         display.grid.status = map_status(ws.grid_import.status);
         strncpy(display.grid.direction_label, "Import", sizeof(display.grid.direction_label) - 1);
         if (source_has_value(&ws.grid_import)) {
@@ -206,16 +187,16 @@ static void render(void)
                            ? (charge_w > discharge_w && charge_w > ENERGY_ACTIVE_THRESHOLD_W)
                            : charge_configured;
     if (use_charge) {
-        display.battery.color_hex = COLOR_BATTERY_CHARGE;
-        display.battery.percent = clamp_percent(charge_w, limits.max_battery_w);
+        display.battery.color_hex = HELIOS_COLOR_BATTERY_CHARGE;
+        display.battery.percent = helios_clamp_percent(charge_w, limits.max_battery_w);
         display.battery.status = map_status(ws.battery_charge.status);
         strncpy(display.battery.direction_label, "Charge", sizeof(display.battery.direction_label) - 1);
         if (source_has_value(&ws.battery_charge)) {
             energy_format_power(charge_w, &format, display.battery.value_text, sizeof(display.battery.value_text));
         }
     } else {
-        display.battery.color_hex = COLOR_BATTERY_DISCHARGE;
-        display.battery.percent = clamp_percent(discharge_w, limits.max_battery_w);
+        display.battery.color_hex = HELIOS_COLOR_BATTERY_DISCHARGE;
+        display.battery.percent = helios_clamp_percent(discharge_w, limits.max_battery_w);
         display.battery.status = map_status(ws.battery_discharge.status);
         strncpy(display.battery.direction_label, "Discharge", sizeof(display.battery.direction_label) - 1);
         if (source_has_value(&ws.battery_discharge)) {
@@ -236,11 +217,7 @@ static void render(void)
                              ws.battery_discharge.status != HA_WS_SOURCE_NOT_CONFIGURED;
     if (have_home_signal) {
         float solar_w = solar_live ? ws.solar.power_w : 0.0f;
-        float net_battery_w = charge_w - discharge_w;
-        float home_w = solar_w + import_w - export_w - net_battery_w;
-        if (home_w < 0.0f) {
-            home_w = 0.0f;
-        }
+        float home_w = helios_consumption_load(solar_w, import_w, export_w, charge_w, discharge_w);
         energy_format_power(home_w, &format, display.center_text, sizeof(display.center_text));
         /* center_sub intentionally left empty - the house icon above the
          * number is the "this is home consumption" label now, ui/home

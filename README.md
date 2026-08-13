@@ -11,7 +11,7 @@ It's the little sibling of [Helios](https://github.com/ReikanYsora/Helios), the 
 ## Status
 
 **V0.1 — Hardware Bring-Up, running on real hardware.** Firmware for
-display, touch, Wi-Fi, buttons, and audio is written in
+display, touch, Wi-Fi, and buttons is written in
 [`firmware/`](firmware/), ported from Waveshare's own reference firmware for
 this exact board, plus the Wi-Fi setup slice of V0.2 (SoftAP + browser
 setup page, spec Section 16) ahead of schedule. Flashed and verified on the
@@ -27,7 +27,7 @@ for the verified pin mapping and hardware bring-up notes.
 
 ## Hardware
 
-- **Base board:** Waveshare ESP32-S3-Touch-AMOLED-1.32 (ESP32-S3, 466×466 circular AMOLED, CST820 touch, ES8311 audio codec)
+- **Base board:** Waveshare ESP32-S3-Touch-AMOLED-1.32 (ESP32-S3, 466×466 circular AMOLED, CST820 touch)
 - **Power:** USB-C only, no battery in the commercial configuration
 - **Enclosure:** custom 3D-printed ASA, open-sourced as STL/STEP
 
@@ -35,7 +35,7 @@ for the verified pin mapping and hardware bring-up notes.
 
 ```
 Helios-Mini/
-├── firmware/        ESP-IDF firmware (display, touch, audio, Wi-Fi, HA client, OTA, UI)
+├── firmware/        ESP-IDF firmware (display, touch, Wi-Fi, HA client, OTA, UI)
 ├── home-assistant/  Home Assistant integration for discovery/pairing
 ├── hardware/         Mechanical reference of the Waveshare board, connectors, dimensions
 ├── enclosure/        3D-printable enclosure

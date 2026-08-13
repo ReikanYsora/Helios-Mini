@@ -1,6 +1,7 @@
 #include "provisioning.h"
 #include "board_config.h"
 #include "storage.h"
+#include "helios_config.h"
 #include "display.h"
 #include "http_forms.h"
 
@@ -20,7 +21,7 @@
 #include <stdio.h>
 
 static const char *TAG = "provisioning";
-static const char *NVS_NAMESPACE = "helios_mini";
+static const char *NVS_NAMESPACE = HELIOS_NVS_NAMESPACE;
 
 #define PROVISIONING_AP_IP        "192.168.4.1"
 #define PROVISIONING_MAX_FORM_LEN 512
@@ -30,7 +31,7 @@ static const char *NVS_NAMESPACE = "helios_mini";
 bool provisioning_has_credentials(void)
 {
     char ssid[33] = {0};
-    return storage_get_string(NVS_NAMESPACE, "wifi_ssid", ssid, sizeof(ssid)) == ESP_OK && ssid[0] != '\0';
+    return storage_get_string(NVS_NAMESPACE, HELIOS_NVS_KEY_WIFI_SSID, ssid, sizeof(ssid)) == ESP_OK && ssid[0] != '\0';
 }
 
 bool provisioning_boot_forced(void)
@@ -161,8 +162,8 @@ static esp_err_t connect_post_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    storage_set_string(NVS_NAMESPACE, "wifi_ssid", final_ssid);
-    storage_set_string(NVS_NAMESPACE, "wifi_pass", password);
+    storage_set_string(NVS_NAMESPACE, HELIOS_NVS_KEY_WIFI_SSID, final_ssid);
+    storage_set_string(NVS_NAMESPACE, HELIOS_NVS_KEY_WIFI_PASS, password);
     ESP_LOGI(TAG, "credentials saved for '%s', rebooting into station mode", final_ssid);
 
     char escaped_ssid[200];
