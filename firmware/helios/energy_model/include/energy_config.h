@@ -33,14 +33,14 @@ void energy_config_save_limits(const energy_limits_t *limits);
 /* How every power number on the device is displayed - the rings' center
  * text and the /display status panel both go through
  * energy_format_power() below, so there's exactly one place this is
- * decided. */
+ * decided. Only the unit is a preference; precision follows from it (whole
+ * watts, or kW to one decimal) so a number never grows long enough to run
+ * under the rings. */
 typedef struct {
     bool use_kw;  /* false = show W (default), true = show kW */
-    int decimals; /* 0-3, default 1 */
 } energy_format_t;
 
 #define ENERGY_DEFAULT_USE_KW   false
-#define ENERGY_DEFAULT_DECIMALS 1
 
 void energy_config_load_format(energy_format_t *out);
 void energy_config_save_format(const energy_format_t *format);

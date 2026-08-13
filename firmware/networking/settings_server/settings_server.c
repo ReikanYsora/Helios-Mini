@@ -738,21 +738,9 @@ static esp_err_t display_get_handler(httpd_req_t *req)
     send_chunk(req, "'>");
 
     send_chunk(req, "<h2>Number format</h2>");
-
-    send_chunk(req, "<label>Show power as</label><select name='unit'>");
-    send_chunk(req, fmt.use_kw ? "<option value='w'>Watts (W)</option>"
-                                  "<option value='kw' selected>Kilowatts (kW)</option>"
-                                : "<option value='w' selected>Watts (W)</option>"
-                                  "<option value='kw'>Kilowatts (kW)</option>");
-    send_chunk(req, "</select>");
-
-    char decimals_str[4];
-    snprintf(decimals_str, sizeof(decimals_str), "%d", fmt.decimals);
-    send_chunk(req, "<label>Decimal places: ");
-    send_chunk(req, decimals_str);
-    send_chunk(req, "</label><input type='range' min='0' max='3' step='1' name='decimals' value='");
-    send_chunk(req, decimals_str);
-    send_chunk(req, "'>");
+    /* Unit is the only choice - precision follows from it on the device
+     * (whole watts, or kW to one decimal), so there's no decimals control. */
+    send_toggle_row(req, "Show power in kilowatts (kW)", "unit_kw", fmt.use_kw);
 
     send_chunk(req, "<button type='submit'>");
     send_icon(req, ICON_CONTENT_SAVE, ICON_ON_ACCENT, 18);
@@ -813,21 +801,11 @@ static esp_err_t display_save_post_handler(httpd_req_t *req)
     }
     energy_config_save_limits(&limits);
 
+    /* Unit toggle: unchecked checkboxes aren't sent, so presence == kW. */
     energy_format_t fmt;
-    energy_config_load_format(&fmt);
-    char unit[4] = {0};
-    http_form_get(body, "unit", unit, sizeof(unit));
-    if (unit[0] != '\0') {
-        fmt.use_kw = (strcmp(unit, "kw") == 0);
-    }
-    char decimals[4] = {0};
-    http_form_get(body, "decimals", decimals, sizeof(decimals));
-    if (decimals[0] != '\0') {
-        int parsed_decimals = atoi(decimals);
-        if (parsed_decimals >= 0 && parsed_decimals <= 3) {
-            fmt.decimals = parsed_decimals;
-        }
-    }
+    char unit_kw[4] = {0};
+    http_form_get(body, "unit_kw", unit_kw, sizeof(unit_kw));
+    fmt.use_kw = unit_kw[0] != '\0';
     energy_config_save_format(&fmt);
 
     /* Unchecked checkboxes aren't sent at all, so presence in the body -

@@ -53,30 +53,11 @@ void energy_config_load_format(energy_format_t *out)
     if (storage_get_string(NVS_NAMESPACE, "fmt_kw", buf, sizeof(buf)) == ESP_OK && buf[0] != '\0') {
         out->use_kw = (buf[0] == '1');
     }
-
-    out->decimals = ENERGY_DEFAULT_DECIMALS;
-    buf[0] = '\0';
-    if (storage_get_string(NVS_NAMESPACE, "fmt_decimals", buf, sizeof(buf)) == ESP_OK && buf[0] != '\0') {
-        int parsed = atoi(buf);
-        if (parsed >= 0 && parsed <= 3) {
-            out->decimals = parsed;
-        }
-    }
 }
 
 void energy_config_save_format(const energy_format_t *format)
 {
     storage_set_string(NVS_NAMESPACE, "fmt_kw", format->use_kw ? "1" : "0");
-
-    char buf[4];
-    int decimals = format->decimals;
-    if (decimals < 0) {
-        decimals = 0;
-    } else if (decimals > 3) {
-        decimals = 3;
-    }
-    snprintf(buf, sizeof(buf), "%d", decimals);
-    storage_set_string(NVS_NAMESPACE, "fmt_decimals", buf);
 }
 
 static bool load_page_flag(const char *key)
@@ -118,5 +99,6 @@ void energy_format_power(float watts, const energy_format_t *format, char *out, 
         energy_config_load_format(&local);
         format = &local;
     }
-    helios_format_power(watts, format->use_kw, format->decimals, out, out_len);
+    /* Precision follows the unit: whole watts, or kW to one decimal. */
+    helios_format_power(watts, format->use_kw, format->use_kw ? 1 : 0, out, out_len);
 }

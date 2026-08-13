@@ -4,6 +4,7 @@
 #include "qr.h"
 #include "figtree.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -34,6 +35,24 @@ LV_IMAGE_DECLARE(mdi_wifi);
 #define RING_SOLAR_DIAM       (RING_IRRADIANCE_DIAM - 2 * (RING_WIDTH + RING_GAP))
 #define RING_GRID_DIAM        (RING_SOLAR_DIAM - 2 * (RING_WIDTH + RING_GAP))
 #define RING_BATTERY_DIAM     (RING_GRID_DIAM - 2 * (RING_WIDTH + RING_GAP))
+
+/* Apple-Watch activity-ring look: a full dim groove behind every ring (the
+ * ring's own colour knocked back toward black) with the bright fill riding
+ * over it, and a small lighter-shade disc marking the fill's leading tip -
+ * the tip marker Apple draws an arrow glyph in, a plain bead here. */
+#define RING_TIP_DIAM     (RING_WIDTH + 2)
+#define RING_TRACK_MIX     70   /* groove = ~27% ring colour over black */
+#define RING_TIP_MIX      180   /* tip disc = ring colour lifted ~30% toward white */
+
+/* The general view's centre number must never spill onto the innermost
+ * ring: clamp it to the clear disc inside the battery ring and step the
+ * Figtree size down (48 -> 32 -> 24) until it fits that width. */
+#define CENTER_TEXT_MAX_W  (RING_BATTERY_DIAM - 2 * RING_WIDTH - 12)
+
+/* Stroke centreline radius for a ring of the given outer diameter - where
+ * its tip bead rides. The bead disc is reachable from the arc through its
+ * user_data, so no per-ring bookkeeping struct is needed. */
+#define RING_CENTERLINE_R(arc)  (lv_obj_get_width(arc) / 2 - RING_WIDTH / 2)
 
 /* Hero views (solar/grid/battery) borrow Helios's own HUD-chip visual
  * language instead of a ring: a pill chip (icon + value, 2px border in
@@ -177,16 +196,32 @@ static lv_obj_t *create_ring(lv_obj_t *parent, int diameter, int width)
     lv_obj_set_style_outline_width(arc, 0, LV_PART_KNOB);
     lv_obj_set_style_pad_all(arc, 0, LV_PART_KNOB);
 
-    /* No visible track - only the colored indicator is drawn. At 0% its
-     * start and end angles coincide, and with rounded caps that zero-
-     * length arc still renders as a small dot marking the ring's start,
-     * rather than nothing at all. */
-    lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
+    /* Dim groove behind the fill (colour set per-ring at update time), the
+     * full-circle track the bright indicator rides over. bg_opa stays off -
+     * that's the widget's rectangle, not the ring. */
+    lv_obj_set_style_arc_opa(arc, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, width, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
 
     lv_obj_set_style_arc_width(arc, width, LV_PART_INDICATOR);
-    /* Rounded caps on the fill - the Apple Watch activity-ring look. */
+    /* Rounded caps on the fill - the Apple Watch activity-ring look. At 0%
+     * start and end coincide and the rounded cap still shows a small dot. */
     lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
+
+    /* Leading-tip bead: a small disc pinned to the fill's front edge,
+     * repositioned as the value animates (arc_anim_exec_cb). Sits on the
+     * stroke centreline, starting at 12 o'clock where a 0% fill begins.
+     * Stashed on the arc's user_data so both the animation and the colour
+     * update can reach it - and torn down with the arc by lv_obj_clean(). */
+    lv_obj_t *disc = lv_obj_create(parent);
+    lv_obj_remove_style_all(disc);
+    lv_obj_set_size(disc, RING_TIP_DIAM, RING_TIP_DIAM);
+    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(disc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(disc, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(disc, LV_ALIGN_CENTER, 0, -(diameter / 2 - width / 2));
+    lv_obj_set_user_data(arc, disc);
     return arc;
 }
 
@@ -195,9 +230,27 @@ static lv_obj_t *create_ring(lv_obj_t *parent, int diameter, int width)
  * place instead of snapping, the way an Apple Watch ring fills. */
 #define RING_ANIM_MS 700
 
+/* Pin a ring's tip bead to the fill's leading edge. 0% starts at 12
+ * o'clock (rotation 270) and fills clockwise, so the angle is 270deg +
+ * value's share of the full turn, and the offset from centre lands the
+ * bead on the stroke centreline. */
+static void position_tip_disc(lv_obj_t *arc)
+{
+    lv_obj_t *disc = lv_obj_get_user_data(arc);
+    if (disc == NULL) {
+        return;
+    }
+    int32_t r = RING_CENTERLINE_R(arc);
+    float ang = (270.0f + lv_arc_get_value(arc) / 1000.0f * 360.0f) * 0.017453293f;
+    int32_t dx = (int32_t)lroundf(r * cosf(ang));
+    int32_t dy = (int32_t)lroundf(r * sinf(ang));
+    lv_obj_align(disc, LV_ALIGN_CENTER, dx, dy);
+}
+
 static void arc_anim_exec_cb(void *var, int32_t value)
 {
     lv_arc_set_value((lv_obj_t *)var, value);
+    position_tip_disc((lv_obj_t *)var);
 }
 
 static void animate_arc_to(lv_obj_t *arc, int32_t target_value)
@@ -239,6 +292,39 @@ static int32_t ring_target_value(const energy_ring_value_t *value, bool visible)
     return target;
 }
 
+/* Applies one metric colour across a ring's three parts: bright fill,
+ * dimmed groove, and lighter tip bead. */
+static void set_ring_colors(lv_obj_t *arc, uint32_t hex)
+{
+    lv_color_t c = lv_color_hex(hex);
+    lv_obj_set_style_arc_color(arc, c, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(arc, lv_color_mix(c, lv_color_black(), RING_TRACK_MIX), LV_PART_MAIN);
+    lv_obj_t *disc = lv_obj_get_user_data(arc);
+    if (disc != NULL) {
+        lv_obj_set_style_bg_color(disc, lv_color_mix(c, lv_color_white(), RING_TIP_MIX), 0);
+    }
+}
+
+/* Sets the centre number at the largest Figtree size that still fits the
+ * clear disc inside the rings, so a long value (big wattage, or kW with a
+ * decimal) shrinks instead of running under the innermost ring. */
+static void fit_center_text(lv_obj_t *label, const char *text)
+{
+    static const lv_font_t *const fonts[] = { &figtree_48, &figtree_32, &figtree_24 };
+    size_t count = sizeof(fonts) / sizeof(fonts[0]);
+    const lv_font_t *chosen = fonts[count - 1];
+    for (size_t i = 0; i < count; i++) {
+        lv_point_t size;
+        lv_text_get_size(&size, text, fonts[i], 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        if (size.x <= CENTER_TEXT_MAX_W) {
+            chosen = fonts[i];
+            break;
+        }
+    }
+    lv_obj_set_style_text_font(label, chosen, 0);
+    lv_label_set_text(label, text);
+}
+
 /* ---- general view (page 0) ---- */
 
 static void build_general_view(lv_obj_t *tile)
@@ -269,18 +355,18 @@ static void build_general_view(lv_obj_t *tile)
 static void update_general_view(const energy_display_t *d)
 {
     animate_arc_to(s_arc_irradiance, ring_target_value(&d->irradiance, d->irradiance.visible));
-    lv_obj_set_style_arc_color(s_arc_irradiance, lv_color_hex(d->irradiance.color_hex), LV_PART_INDICATOR);
+    set_ring_colors(s_arc_irradiance, d->irradiance.color_hex);
 
     animate_arc_to(s_arc_solar, ring_target_value(&d->solar, d->solar.visible));
-    lv_obj_set_style_arc_color(s_arc_solar, lv_color_hex(d->solar.color_hex), LV_PART_INDICATOR);
+    set_ring_colors(s_arc_solar, d->solar.color_hex);
 
     animate_arc_to(s_arc_grid, ring_target_value(&d->grid, d->grid.visible));
-    lv_obj_set_style_arc_color(s_arc_grid, lv_color_hex(d->grid.color_hex), LV_PART_INDICATOR);
+    set_ring_colors(s_arc_grid, d->grid.color_hex);
 
     animate_arc_to(s_arc_battery, ring_target_value(&d->battery, d->battery.visible));
-    lv_obj_set_style_arc_color(s_arc_battery, lv_color_hex(d->battery.color_hex), LV_PART_INDICATOR);
+    set_ring_colors(s_arc_battery, d->battery.color_hex);
 
-    lv_label_set_text(s_center_text, d->center_text);
+    fit_center_text(s_center_text, d->center_text);
     lv_label_set_text(s_center_sub, d->center_sub);
     lv_obj_align_to(s_center_sub, s_center_text, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
 }
@@ -656,11 +742,22 @@ static void tileview_event_cb(lv_event_t *e)
      * vertical one's top/bottom position instead. */
     if (active_tile == s_ip_tile) {
         lv_obj_add_flag(s_dots_row, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(s_vdots_row, LV_OBJ_FLAG_HIDDEN);
         update_vdots(1);
         return;
     }
     lv_obj_remove_flag(s_dots_row, LV_OBJ_FLAG_HIDDEN);
-    update_vdots(0); /* anywhere in the horizontal row counts as "general row" on the vertical axis */
+
+    /* The general<->IP vertical axis only exists at the general view, so its
+     * left-edge dots show there (and on the IP screen it leads to) and stay
+     * hidden on every hero/consumption page, which has no up/down neighbour
+     * for them to mean anything. */
+    if (active_tile == s_tiles[0]) {
+        lv_obj_remove_flag(s_vdots_row, LV_OBJ_FLAG_HIDDEN);
+        update_vdots(0);
+    } else {
+        lv_obj_add_flag(s_vdots_row, LV_OBJ_FLAG_HIDDEN);
+    }
 
     for (int i = 0; i < s_page_count; i++) {
         if (s_tiles[i] == active_tile) {
