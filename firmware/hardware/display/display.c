@@ -43,6 +43,10 @@ static SemaphoreHandle_t s_flush_done = NULL;
  * plain bool is fine here: one ISR writer, one reader in lvgl_task, and
  * it only ever goes false->true once. */
 static volatile bool s_first_flush_done = false;
+/* Small internal DMA buffer the flush bounces each area through - the LVGL
+ * draw buffers live in PSRAM (freeing internal RAM) but the QSPI DMA can't
+ * source from there. */
+static uint8_t *s_bounce = NULL;
 static bool s_brightness_applied = false;
 
 /* CO5300 init sequence, ported from Waveshare's own factory firmware for
@@ -150,12 +154,16 @@ void display_set_brightness(uint8_t level)
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_p)
 {
-    lv_draw_sw_rgb565_swap(color_p, lv_area_get_width(area) * lv_area_get_height(area));
+    size_t px = lv_area_get_width(area) * lv_area_get_height(area);
+    /* color_p is in PSRAM (the LVGL draw buffers); the QSPI DMA can only
+     * source from internal RAM, so bounce this area through s_bounce. */
+    memcpy(s_bounce, color_p, px * 2);
+    lv_draw_sw_rgb565_swap(s_bounce, px);
 
     /* This panel's framebuffer is offset by 6 columns relative to the
      * physical drawable area - ported as-is from Waveshare's reference
      * firmware, which applies the same +6/+7 offset. */
-    esp_lcd_panel_draw_bitmap(s_panel, area->x1 + 6, area->y1, area->x2 + 7, area->y2 + 1, color_p);
+    esp_lcd_panel_draw_bitmap(s_panel, area->x1 + 6, area->y1, area->x2 + 7, area->y2 + 1, s_bounce);
 }
 
 static void rounder_cb(lv_event_t *e)
@@ -359,19 +367,15 @@ void display_init(void)
     lv_display_set_user_data(disp, s_panel);
     lv_display_add_event_cb(disp, rounder_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 
-    /* Tried moving these to MALLOC_CAP_SPIRAM with a much bigger (full-
-     * height) size to cut down on flush calls during the swipeable
-     * tileview's page-turn animation - esp_lcd_panel_io_spi's queued color
-     * transmit rejected a PSRAM source outright on real hardware
-     * ("spi transmit (queue) color failed", blank screen). Reverted to
-     * plain MALLOC_CAP_DMA (internal RAM); see HELIOS_LVGL_BUF_LINES above
-     * and the QSPI pclk_hz in panel_init() for the safer levers actually
-     * used against the swipe stutter, and docs/HARDWARE_REFERENCE.md for
-     * the full writeup. */
+    /* The two LVGL draw buffers live in PSRAM to keep ~tens of KB of scarce
+     * internal RAM free (the QSPI DMA can't source from PSRAM directly - it
+     * rejects it with a blank screen - so flush_cb bounces each area through
+     * s_bounce, one internal-RAM buffer sized to a full flush). */
     size_t buf_size = HELIOS_LCD_H_RES * HELIOS_LVGL_BUF_LINES * LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565);
-    void *buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
-    void *buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
-    assert(buf1 && buf2);
+    void *buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    void *buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    s_bounce = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
+    assert(buf1 && buf2 && s_bounce);
     lv_display_set_buffers(disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
     /* Figtree (the Helios brand font) as the default for every widget. */
