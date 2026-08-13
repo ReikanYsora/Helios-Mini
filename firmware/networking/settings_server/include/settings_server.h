@@ -19,13 +19,18 @@
  *   /ha/scan                mDNS search (networking/ha_discovery) for Home
  *                            Assistant on the LAN; picking a result
  *                            prefills the URL field, Save still commits it.
- *   /display, /display/save Which Home Assistant entities feed the three
- *                            energy rings (helios/energy_model) and their
- *                            100% power references, plus a live per-entity
- *                            status panel (not configured / Home Assistant
- *                            not set up / not tested yet / a real error /
- *                            OK with the value) - saving tests every filled
- *                            in entity immediately, same as /ha/save.
+ *   /display, /display/save, Live status of the three energy rings' Home
+ *   /display/rescan         Assistant sources (helios/ha_ws) - which
+ *                            entity feeds each ring is auto-discovered
+ *                            from Home Assistant's own Energy Dashboard
+ *                            configuration, nothing typed here - plus the
+ *                            rings' 100% power references (/display/save)
+ *                            and a manual re-discovery trigger
+ *                            (/display/rescan). Status panel is never
+ *                            silently blank: not set up in the Energy
+ *                            Dashboard / Home Assistant not set up at all /
+ *                            waiting for a first live update / a live
+ *                            value (flagged stale if it stops updating).
  *   /debug and its sub-paths hardware self-tests (screen/speaker/microphone)
  *                            plus a live system status snapshot
  *                            (diagnostics). No gyroscope test - this board
@@ -34,10 +39,9 @@
  * This replaces the discovery/pairing custom-integration flow originally
  * sketched in spec Sections 17-18: instead of Helios Mini being discovered
  * by Home Assistant, the user points Helios Mini at Home Assistant
- * directly, the same way most self-hosted integrations bootstrap. Actually
- * *using* the saved token (a WebSocket client + energy data model) is not
- * built yet - this only covers capturing, storing, and validating the
- * settings.
+ * directly, the same way most self-hosted integrations bootstrap.
+ * helios/ha_ws then does the rest over a websocket - auth, Energy
+ * Dashboard discovery, live updates - with no further manual setup.
  *
  * Call once Wi-Fi station mode is up (wifi_sta_start()); safe to call
  * before the connection actually completes, since starting the server

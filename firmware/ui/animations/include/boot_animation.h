@@ -1,12 +1,10 @@
 #pragma once
 
-/* Runs the spec Section 15 boot sequence on the active LVGL screen: black
- * screen -> small central dot -> circular sweep -> Helios logo fade-in.
- * Call once, right after display_init(). Non-blocking: schedules LVGL
- * animations and returns immediately; the sequence plays out over
- * subsequent ticks of the display component's own LVGL task.
- *
- * Wi-Fi/Home Assistant connection status (steps 6-7 of the spec sequence)
- * are not wired up yet - that needs networking/wifi and helios/ha_client,
- * which land in V0.2. */
+/* Runs the boot sequence on the active LVGL screen: the Helios logo draws
+ * itself in, its 12 sun-flame rays lighting up one by one around the
+ * circle followed by the central disc (assets/helios_logo_pieces.h),
+ * instead of a generic spinner. Call once, right after display_init().
+ * Non-blocking: schedules LVGL animations and returns immediately; the
+ * sequence plays out over subsequent ticks of the display component's own
+ * LVGL task. */
 void boot_animation_start(void);

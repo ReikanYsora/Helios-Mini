@@ -28,6 +28,12 @@ static esp_lcd_panel_handle_t s_panel = NULL;
 static esp_lcd_panel_io_handle_t s_io = NULL;
 static SemaphoreHandle_t s_lvgl_mutex = NULL;
 static SemaphoreHandle_t s_flush_done = NULL;
+/* Set (from ISR context) the moment the first real frame finishes
+ * transferring to the panel - see the brightness note in panel_init(). A
+ * plain bool is fine here: one ISR writer, one reader in lvgl_task, and
+ * it only ever goes false->true once. */
+static volatile bool s_first_flush_done = false;
+static bool s_brightness_applied = false;
 
 /* CO5300 init sequence, ported from Waveshare's own factory firmware for
  * this exact board (brought up through the SH8601-compatible QSPI driver -
@@ -40,7 +46,13 @@ static const sh8601_lcd_init_cmd_t s_lcd_init_cmds[] = {
     {0x3A, (uint8_t[]){0x55}, 1, 0},
     {0x35, (uint8_t[]){0x00}, 1, 0},
     {0x53, (uint8_t[]){0x20}, 1, 0},
-    {0x51, (uint8_t[]){0xFF}, 1, 0},
+    /* Brightness starts at 0, not the 0xFF this table originally had here
+     * (ported as-is from Waveshare's factory firmware, which apparently
+     * doesn't care about the resulting flash of garbage GRAM content).
+     * Sleep Out (0x11) and Display On (0x29) below happen with the panel
+     * already dark; it only gets ramped up once real content is actually
+     * on screen - see the s_first_flush_done handling in lvgl_task(). */
+    {0x51, (uint8_t[]){0x00}, 1, 0},
     {0x63, (uint8_t[]){0xFF}, 1, 0},
     {0x2A, (uint8_t[]){0x00, 0x06, 0x01, 0xD7}, 4, 0},
     {0x2B, (uint8_t[]){0x00, 0x00, 0x01, 0xD1}, 4, 0},
@@ -52,6 +64,7 @@ static bool on_color_trans_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_e
 {
     BaseType_t woken = pdFALSE;
     xSemaphoreGiveFromISR(s_flush_done, &woken);
+    s_first_flush_done = true;
     return woken == pdTRUE;
 }
 
@@ -106,7 +119,10 @@ static void panel_init(void)
     uint8_t madctl_param = 0xC0;
     esp_lcd_panel_io_tx_param(s_io, madctl_cmd, &madctl_param, 1);
 
-    display_set_brightness(0xFF);
+    /* Brightness is already 0 at this point (set in s_lcd_init_cmds[],
+     * before Sleep Out/Display On) and stays there - ramping it up only
+     * happens once the first real frame has actually been flushed, see
+     * lvgl_task's use of s_first_flush_done below. */
 }
 
 void display_set_brightness(uint8_t level)
@@ -179,6 +195,12 @@ static void lvgl_task(void *arg)
         if (display_lock(-1)) {
             delay_ms = lv_timer_handler();
             display_unlock();
+        }
+        if (!s_brightness_applied && s_first_flush_done) {
+            /* First real frame is on the panel now - safe to turn the
+             * screen on. See the comment in panel_init(). */
+            display_set_brightness(0xFF);
+            s_brightness_applied = true;
         }
         if (delay_ms > HELIOS_LVGL_TASK_MAX_DELAY_MS) {
             delay_ms = HELIOS_LVGL_TASK_MAX_DELAY_MS;

@@ -60,15 +60,26 @@ void app_main(void)
         ESP_LOGI(TAG, "no Wi-Fi credentials (or BOOT held at power-on): starting setup portal");
         provisioning_start_portal();
     } else {
-        /* Keeps the on-screen IP current across (re)connects, so the
-         * settings server below is always reachable at a glance. */
-        wifi_sta_set_connected_cb(network_status_show_connected);
+        /* The IP notice is only useful as a "how do I reach the settings
+         * app" pointer for whoever hasn't set up Home Assistant yet -
+         * once it's configured, the device is heading for the energy
+         * rings anyway (helios/energy_model, below), so showing the IP
+         * first is just a flash of text before it gets replaced. Skip
+         * it in that case and leave the boot logo up until the rings are
+         * ready instead. */
+        char ha_url[128] = {0};
+        char ha_token[256] = {0};
+        bool ha_already_configured = settings_get_ha_config(ha_url, sizeof(ha_url), ha_token, sizeof(ha_token));
+        if (!ha_already_configured) {
+            wifi_sta_set_connected_cb(network_status_show_connected);
+        }
         wifi_sta_start();
         settings_server_start();
         /* Polls Home Assistant for the energy rings and switches the screen
-         * from the IP notice to them once a "home" entity is configured -
-         * see docs/HARDWARE_REFERENCE.md. Only makes sense once the device
-         * can actually reach Home Assistant, so it's not started in the
+         * from whatever's currently up (the boot logo, or the IP notice) to
+         * them once the Energy Dashboard has a source configured - see
+         * docs/HARDWARE_REFERENCE.md. Only makes sense once the device can
+         * actually reach Home Assistant, so it's not started in the
          * setup-portal branch above. */
         energy_model_start();
     }

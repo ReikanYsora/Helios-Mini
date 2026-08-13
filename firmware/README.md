@@ -114,14 +114,15 @@ external requests, no icon font):
   `<url>/api/`) and shows the result. `/ha/scan` searches mDNS
   (`networking/ha_discovery`) for Home Assistant on the LAN; picking a
   result prefills the URL field, Save still commits it.
-- **Display** (`/display`, `/display/save`) — which Home Assistant entity
-  feeds each energy ring (solar, grid import, grid export, battery charge,
-  battery discharge, home) and each ring's 100% power reference, plus a
-  live per-entity status panel: not configured / Home Assistant not set
-  up / not tested yet / a real error (not found, unavailable, not
-  numeric, unauthorized, unreachable) / OK with the live value. Saving
-  tests every filled-in entity immediately against the real Home
-  Assistant instance, same as `/ha/save`.
+- **Display** (`/display`, `/display/save`, `/display/rescan`) — a
+  read-only status panel for the energy rings, auto-discovered from Home
+  Assistant's own Energy Dashboard configuration (Settings → Dashboards →
+  Energy) — nothing typed here at all. Each row shows: not set up in the
+  Energy Dashboard / Home Assistant not set up on Helios Mini / waiting
+  for a first live update / a live power value (flagged stale if it stops
+  updating). "Rescan" re-reads Home Assistant's config on demand (after
+  the user edits it there). Below that, the ring-limits form (4 numbers,
+  Helios Mini's own display preference, saved via `/display/save`).
 - **Debug** (`/debug` and sub-paths) — live system status
   (uptime/heap/PSRAM/Wi-Fi RSSI) plus buttons to flash the screen, play
   the startup chime, and measure the microphone's peak level. No
@@ -130,34 +131,54 @@ external requests, no icon font):
 Verified live: fetched all four pages over the LAN with `curl` (200s,
 each response checked to actually end in `</html>`, not just tag-balance
 counted), exercised the AP toggle end-to-end through the running device
-with the station connection staying up throughout, and exercised
-`/display/save` against the real board with both a deliberately wrong
-entity id (came back "no such entity in Home Assistant" — a real 404
-round-tripped from the user's Home Assistant instance) and a reset back
-to empty. Not yet reviewed by a human actually looking at it in a
-browser, or with real entity ids configured.
-
-`helios/ha_client` now also fetches individual entity power values
-(`ha_client_get_entity_power()`, used by the energy rings below) on top
-of the token-validation call — still no WebSocket client or push
-updates, everything is polled.
+with the station connection staying up throughout, and confirmed
+`/display` auto-discovers real power entities from the user's own Home
+Assistant Energy Dashboard - solar, grid import, and grid export all went
+live within seconds of connecting, with real wattages. Not yet reviewed
+by a human actually looking at it in a browser, or on the physical round
+panel itself.
 
 ### The energy rings
 
 Three concentric Apple-Watch-style rings on the round panel — solar / grid
 / battery, outer to inner — plus the home's current consumption as big
-text in the middle. `helios/energy_model` polls Home Assistant every 10s
-(`ha_client_get_entity_power()` against the 6 entities configured on
-`/display`), decides which direction is live for the two-entity rings
-(grid import vs. export, battery charge vs. discharge), and pushes the
-result to `ui/home`'s `energy_rings_update()`. The screen switches from
-the persistent IP notice to the rings the first time a `home` entity gets
-configured — there's no way back to the IP notice without rebooting.
-Entity model and colors mirror the parent Helios HA card's
+text in the middle. `helios/ha_ws` connects to Home Assistant's websocket
+API, reads its Energy Dashboard configuration, and subscribes to live
+updates for each ring's linked **power** entity — the same kind of entity
+the parent Helios HA card's own power chips read. Home Assistant's Energy
+Dashboard also always has a cumulative *energy* (kWh) statistic alongside
+that power entity, for HA's own billing/history graphs — Helios Mini
+never uses it, not even as a fallback: a ring with no power entity linked
+is simply reported not configured, full stop. `helios/energy_model` turns
+`ha_ws`'s live status into ring percentages/colors every 3s, decides
+which direction is active for the two-entity rings (grid import vs.
+export, battery charge vs. discharge), and pushes the result to
+`ui/home`'s `energy_rings_update()`. The screen switches from the
+persistent IP notice to the rings the first time the Energy Dashboard has
+*any* source configured — there's no way back to the IP notice without
+rebooting. Entity model and colors mirror the parent Helios HA card's
 `chip-appearance.ts` exactly, including battery being two separate
-entities (charge/discharge), not one signed value. Full write-up,
-including a chunked-HTTP-response bug this surfaced (empty dynamic
-strings were silently truncating pages), in `docs/HARDWARE_REFERENCE.md`.
+entities (charge/discharge), not one signed value.
+
+Getting to "power-only, zero typing" took a few real corrections against
+the user's actual Home Assistant instance along the way — a schema
+assumption that didn't match their real setup, a first attempt that still
+derived power from energy deltas when a live power entity was available,
+and a stack overflow from summing multiple sources per ring. Full
+write-up in `docs/HARDWARE_REFERENCE.md`.
+
+Ring updates animate into place (a real lerp via LVGL's own animation
+timer, not a hard jump), have no background track — only the colored
+fill is drawn, and even at 0%/not-configured it still shows a small
+rounded dot marking the ring's start rather than vanishing outright. A
+small MDI house icon sits above the center number instead of a "home
+consumption" text label. Home consumption itself mirrors the parent
+Helios card's own formula verbatim (`consumptionLoad()` in
+`helios/src/core/energy.ts`): `production + gridImport - gridExport -
+netBattery`, clamped at 0. How power numbers are displayed everywhere
+(rings and `/display`'s status panel) is a single shared preference —
+`/display`'s form now also has a W/kW toggle and a 0-3 decimal-places
+slider (`energy_config.h`'s `energy_format_t`, default W/1 decimal).
 
 ## Flash / monitor
 
@@ -210,9 +231,10 @@ idf.py -p <port> flash monitor
 ```
 
 The component manager fetches `lvgl/lvgl`, `espressif/esp_lcd_sh8601`,
-`espressif/button`, and `espressif/es8311` automatically, pinned to the
-verified versions in `firmware/dependencies.lock` (committed; cached copies
-land in `managed_components/`, not committed — see `.gitignore`).
+`espressif/button`, `espressif/es8311`, `espressif/mdns`, and
+`espressif/esp_websocket_client` automatically, pinned to the verified
+versions in `firmware/dependencies.lock` (committed; cached copies land
+in `managed_components/`, not committed — see `.gitignore`).
 
 ## Layout
 
@@ -240,13 +262,19 @@ firmware/
 │   └── http_forms/         shared form-decoding helpers (used by every HTTP server above)
 ├── helios/
 │   ├── ha_client/          REST calls: validate a URL + token, fetch one entity's power
-│   └── energy_model/       polls Home Assistant every 10s, drives ui/home's rings; entity
-│                            + ring-limit config storage (energy_config.h)
+│   ├── ha_ws/               Home Assistant websocket client: auth, Energy Dashboard
+│   │                        discovery, live power-entity subscriptions (power only,
+│   │                        never energy/kWh - see docs/HARDWARE_REFERENCE.md)
+│   └── energy_model/       turns helios/ha_ws's live status into ring percentages/colors
+│                            every 3s, drives ui/home; ring-limit config storage
+│                            (energy_config.h - Helios Mini's own display preference,
+│                            not discovered from Home Assistant)
 ├── storage/                NVS string get/set wrapper
 ├── diagnostics/            periodic heap/PSRAM/uptime log + on-demand status/self-tests
 └── ui/
     ├── animations/         boot sequence (spec Section 15) + persistent IP screen, Helios logo asset
-    └── home/                energy_rings.h/.c - the three-ring + center-text screen (pure LVGL, no HA)
+    └── home/                energy_rings.h/.c - the three-ring + center-icon-and-text
+                               screen (pure LVGL, no HA), assets/mdi_home_icon.c (generated)
 ```
 
 `helios/pairing/`, `networking/discovery/`, `ota/`, and the rest of `ui/`
@@ -260,15 +288,36 @@ either.
 
 ## Regenerating the boot logo
 
-The Helios logo used in the boot animation
-(`firmware/ui/animations/assets/helios_logo.c`) is generated from
-`assets/brand/helios-logo.svg` (pulled from the `Helios` repo) via:
+The boot animation draws the Helios logo in piece by piece - its 12
+sun-flame rays, then the central disc - rather than fading in one flat
+image. `assets/brand/helios-logo.svg` (pulled from the `Helios` repo)
+happens to already be one `<path>` with 13 separate "M...Z" subpaths (the
+12 rays + the disc), which is exactly what makes this possible without
+hand-splitting the artwork. Regenerate
+`firmware/ui/animations/assets/helios_logo_pieces.c/.h` via:
+
+```sh
+python3 tools/asset-gen/svg_pieces_to_lvgl.py \
+    assets/brand/helios-logo.svg 440 helios_logo_piece \
+    firmware/ui/animations/assets/helios_logo_pieces.c \
+    firmware/ui/animations/assets/helios_logo_pieces.h
+```
+
+Each subpath is rasterized at the same px-per-SVG-unit density as a full
+440px render of the whole logo, then cropped to its own bounding box - a
+single flame is a small fraction of the canvas, so the 13 pieces together
+end up smaller in flash than one full 440x440 image would be. Requires
+`rsvg-convert` (`brew install librsvg`) and Pillow. Do not hand-edit either
+generated file.
+
+`tools/asset-gen/svg_to_lvgl.py` (single flat image, no piece-splitting)
+is still there and still used for smaller standalone icons - the MDI house
+icon on the energy rings screen
+(`firmware/ui/home/assets/mdi_home_icon.c`) is generated from
+`assets/icons/mdi-home.svg` the same way:
 
 ```sh
 python3 tools/asset-gen/svg_to_lvgl.py \
-    assets/brand/helios-logo.svg 440 helios_logo \
-    firmware/ui/animations/assets/helios_logo.c
+    assets/icons/mdi-home.svg 40 mdi_home_icon \
+    firmware/ui/home/assets/mdi_home_icon.c
 ```
-
-Requires `rsvg-convert` (`brew install librsvg`) and Pillow. Do not hand-edit
-the generated `.c` file.

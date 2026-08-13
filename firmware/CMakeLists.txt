@@ -19,6 +19,7 @@ set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/networking/http_forms"
     "${CMAKE_CURRENT_LIST_DIR}/networking/ha_discovery"
     "${CMAKE_CURRENT_LIST_DIR}/helios/ha_client"
+    "${CMAKE_CURRENT_LIST_DIR}/helios/ha_ws"
     "${CMAKE_CURRENT_LIST_DIR}/helios/energy_model"
     "${CMAKE_CURRENT_LIST_DIR}/storage"
     "${CMAKE_CURRENT_LIST_DIR}/diagnostics"

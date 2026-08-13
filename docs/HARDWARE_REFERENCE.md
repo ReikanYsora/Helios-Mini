@@ -496,6 +496,364 @@ work end-to-end) - then again with everything cleared back to empty to
 leave the device in a clean, unconfigured state. No crashes or reboots
 in the serial log across any of this.
 
+## Auto-discovery via Home Assistant's WebSocket + Energy Dashboard, power-only (2026-08-13)
+
+Superseded the manual entity-entry design from the previous session before
+it ever shipped to the user: **"Je ne veux pas devoir renseigné mes
+entités manuellement, je veux que l'on recupere directement les valeurs
+en live depuis le websocket d'HA."** Replaced `/display`'s 6 free-text
+entity fields with zero configuration: Helios Mini reads Home Assistant's
+own Energy Dashboard configuration (Settings -> Dashboards -> Energy)
+directly, live, over a websocket, using **only** each source's linked
+live power (W) entity - never its cumulative energy (kWh) statistic, not
+even as a fallback. Getting to that final rule took three iterations, all
+corrected live against the user's own Home Assistant instance rather than
+guessed - see "Three real corrections" below; this section describes the
+design that's actually running.
+
+**New component `helios/ha_ws`** - a Home Assistant WebSocket client
+(`espressif/esp_websocket_client` managed component, resolved to 1.8.0):
+
+1. Connect to `<url>/api/websocket` (http(s) -> ws(s) scheme swap +
+   `/api/websocket` appended). `esp_websocket_client`'s built-in
+   auto-reconnect (`reconnect_timeout_ms`) handles Wi-Fi drops and HA
+   restarts without any manual retry loop.
+2. Handshake: HA sends `auth_required` first (not the client) -> reply
+   `{"type":"auth","access_token":...}` -> HA replies `auth_ok` or
+   `auth_invalid`.
+3. On `auth_ok`, send `{"type":"energy/get_prefs"}`. Each
+   `energy_sources[]` entry can carry a live power companion entity - the
+   same one the parent Helios HA card's own power chips read: `stat_rate`
+   on a solar source, `power_config.stat_rate_from`/`stat_rate_to` on a
+   grid or battery source (`stat_rate_from` = import/discharge,
+   `stat_rate_to` = export/charge). **Only these are ever used.** The kWh
+   statistic id(s) that always sit alongside them in the same response
+   (`stat_energy_from`/`stat_energy_to`, for HA's own billing/history
+   graphs) are read out of the JSON only far enough to log them for
+   debugging - never subscribed to, never a fallback. A ring with no
+   power entity linked in HA's Energy Dashboard is simply reported not
+   configured.
+4. A ring can be fed by more than one power entity (uncommon, but the
+   schema allows it, e.g. multiple solar strings or battery packs) -
+   every one found is subscribed and summed, not just the first.
+5. Per discovered entity: `{"type":"subscribe_trigger","trigger":{"platform":"state","entity_id":...}}`
+   - a single-entity automation-style state trigger, not the firehose
+   `subscribe_events`/`state_changed` (which would hand this ESP32 every
+   state change on a ~1250-entity instance) and not the compact
+   `subscribe_entities` diff format either (its add/change delta-merging
+   isn't worth the embedded complexity here). One `subscribe_trigger` per
+   entity means HA itself filters server-side - the board only ever
+   receives events for exactly what it asked for.
+6. Immediately after subscribing, one REST call
+   (`ha_client_get_entity_power()`) bootstraps a starting reading - the
+   ring goes live before HA even sends its first push update, no waiting
+   for a second sample the way a derivative-based approach would need.
+7. Every subsequent `to_state` for a subscription is used directly
+   (kW/MW unit-converted to W, same conversion the REST bootstrap
+   applies). A source with no new sample in `HA_WS_STALE_AFTER_S` (10
+   minutes) is reported `HA_WS_SOURCE_STALE`; when a ring sums several
+   contributors, staleness uses the *freshest* one, not the oldest.
+8. Websocket frames arrive fragmented across multiple
+   `WEBSOCKET_EVENT_DATA` callbacks (`payload_offset`/`payload_len`); a
+   small reassembly buffer accumulates each frame before handing the
+   complete JSON string to a queue - the event callback itself (which
+   runs on the client's own internal task) never blocks on cJSON parsing
+   or the REST bootstrap call, both of which happen on `ha_ws_task`
+   instead.
+
+`helios/energy_model` no longer polls anything - it starts `ha_ws` and
+every 3s turns its live status + the still-manually-set ring limits
+(`energy_config.h`, unchanged) into ring percentages/colors. Home
+consumption (the center text) has no Energy Dashboard entity to discover
+either - HA's own dashboard draws its consumption graph as
+`solar + grid_import - grid_export`, so that's what Helios Mini computes
+too, straight from the already-live per-source power values.
+
+`/display` is a read-only auto-discovery status panel (which power
+entity/ies Home Assistant reported for each ring, comma-joined if more
+than one, live value or why not) plus a "Rescan Energy Dashboard" button
+(`ha_ws_rescan()`, for after the user edits their Energy Dashboard config
+in HA) and the ring-limits form (unchanged, since Home Assistant has no
+concept of Helios Mini's display scale).
+
+### Three real corrections, all against the live instance, not guesses
+
+Every one of these was only caught because the whole loop - flash, log,
+curl, read the user's actual `energy/get_prefs` response, fix, reflash -
+happened against the user's real Home Assistant instance (AIUR,
+`192.168.0.2:8123`), not assumed from the API docs or judged from the
+terminal alone:
+
+1. **Wrong grid schema, silently found nothing.** The API docs describe
+   grid sources as `flow_from: [{stat_energy_from}]` / `flow_to: [{stat_energy_to}]`
+   arrays; the user's real instance returns `stat_energy_from`/
+   `stat_energy_to` flat on the source object instead, and has *three*
+   separate `"grid"` entries (two Linky tariff-period meters, one Shelly)
+   rather than one. **User:** "Grid import et export sont configurés dans
+   mon dashboard energie (et Helios fonctionne avec) alors que là, ca me
+   ressort qu'ils ne sont pas configurés." Fixed by logging the raw
+   `energy/get_prefs` response in full and reading exactly what the
+   user's HA actually sends.
+2. **Deriving power from energy when a live power entity was right
+   there.** The first fix (still summing kWh deltas) missed that the same
+   response already carried `stat_rate`/`power_config.stat_rate_from`/
+   `stat_rate_to` - real power entities. **User:** "pourquoi tu ne prends
+   pas directement les valeurs des entities puissance du dashbaord ! [...]
+   Je t'ai dit de te baser sur la carte Helios et sur le fonctionnement
+   des chips d'Helios !" First attempt at this fix introduced a subtler
+   bug: `power_config.stat_rate_from` (grid import power) sitting on the
+   Shelly's *export*-typed grid entry got attached to grid import too,
+   double-counting the same physical import against the Linky meters
+   already tracking it there. Corrected mid-fix by only trusting a
+   direction's power companion when that same object's matching
+   `stat_energy_from`/`stat_energy_to` was also set.
+3. **Any energy fallback at all was the wrong idea.** Even after fixing
+   #2, a ring with no power companion (the Linky meters) still fell back
+   to deriving power from their kWh deltas - which is exactly what
+   surfaced the direction-gating bug above, and produced a real but
+   wrong-feeling result (`sensor.lixee_easf02, sensor.lixee_easf01` on
+   the grid import row). **User:** "C'est pas DU TOUT DES ENTITIES DE
+   PUISSANCE ça... et encore moins celles qui sont configurées !",
+   followed by: **"ON NE RECUPERERA JAMAIS des entités d'ENERGIE. on ne
+   se base QUE sur la puissance."** Removed the energy-derivative path
+   entirely - `ha_client_get_entity_raw_value()` (added for it) was
+   deleted outright, not just left unused. Discovery now does one pass
+   per ring collecting every power-entity candidate found anywhere in
+   `energy_sources[]`; a ring with zero power candidates is reported not
+   configured, full stop, regardless of what kWh statistics exist for it.
+
+### Stack overflow from summing multiple sources
+
+Summing multiple contributors per ring meant `apply_energy_prefs()` grew
+locals proportional to `SLOT_COUNT * HA_WS_MAX_SUB` - the exact same class
+of bug as the `wifi_ap_record_t aps[20]` stack overflow from
+`networking/provisioning` earlier in this project (see above), and it hit
+for real on this hardware the moment multi-source grid data actually
+flowed through it (crash-loop reported live: "ca demarre en boucle").
+Fixed the same way as last time: heap-allocate instead of a stack local.
+A second stack overflow followed immediately after in the `energy_model`
+task - `ha_ws_status_t` grew to ~2KB once its entity-id fields widened to
+fit several comma-joined ids, declared as a local in `energy_model.c`'s
+`render()`, on a task stack sized for the old, smaller struct. Fixed by
+sizing both tasks' stacks with real headroom instead of the minimum that
+happened to work before.
+
+**Verified live**, on the final power-only design: solar, grid import,
+and grid export all went live *immediately* on connect (one REST
+bootstrap each, no waiting for a push update), showing real wattages
+(`6 W`, `907 W`, `0 W`) - all three from genuine power entities
+(`..._puissance`, `..._puissance_consommation`, `..._puissance_restitution`),
+zero Linky/kWh entities anywhere in the result. Battery correctly shows
+not configured (none set up in the user's Energy Dashboard).
+`/display/rescan`, `/ha`, `/network`, `/debug` all still fetch clean over
+`curl`. No crashes after the stack fixes; free heap settled around 58KB
+after boot + several page loads (down from ~89KB pre-websocket, from the
+larger task stacks now required - not concerning on an 8MB-PSRAM board,
+no sign of a leak, but not stress-tested over a long run either).
+
+### Home consumption formula corrected to match Helios exactly
+
+The center-text formula (`solar + grid_import - grid_export`, clamped at
+0) was an independent guess at "how HA's Energy Dashboard draws its own
+consumption graph" - reasonable-sounding, but not actually verified
+against the parent Helios card, and missing the battery term entirely.
+**User:** "la logique de calcul de la consommation de la maison est à
+reprendre sur Helios, actuellement, tu ne fais qu'afficher la connexion à
+l'import grid en consommation." Checked the real source this time
+(`~/Developer/helios/src/core/energy.ts`, `consumptionLoad()`) instead of
+guessing again:
+
+```ts
+// load = production + gridImport - gridExport - netBattery
+// (netBattery = charge - discharge, charge positive), clamped at 0.
+```
+
+`helios/energy_model`'s `render()` now mirrors this exactly, including
+the `netBattery = charge - discharge` term it was missing (with no
+battery configured on the test instance, `charge_w`/`discharge_w` are
+both 0, so this specific fix wasn't independently visible live - but the
+formula now matches Helios's own identity verbatim rather than an
+approximation of it).
+
+### Ring visual polish: rounded caps, knob dot removed
+
+**User:** "profites en pour enlever le point jaune qui apparait au centre
+du logo d'Helios et fais en sorte que les anneaux soient 'fermée' avec un
+arrondi, comme les anneaux de l'apple watch." Two fixes in `ui/home/energy_rings.c`:
+`lv_arc`'s default theme draws a small draggable "knob" circle at the
+indicator's end (meant for interactive sliders) - `lv_obj_remove_style()`
+alone doesn't reliably strip every theme-applied style, so every visual
+property that could paint it (`bg_opa`, `border_width`, `shadow_width`,
+`outline_width`, padding) is now overridden explicitly to fully suppress
+it. Both arc parts also switched from `arc_rounded(false)` to `true` for
+rounded caps - the actual Apple Watch activity-ring look, which the
+original implementation never had despite the ring design being
+explicitly modeled on it.
+
+## Further ring/UI polish, same live session (2026-08-13)
+
+A rapid round of visual feedback direct from the physical board, each one
+built, flashed, and confirmed in turn:
+
+- **Boot logo had its own separate stray dot, not the ring knob.**
+  **User:** "j'ai toujours le point jaune au milieu du logo helios au
+  demarrage aussi (sur l'ecran)." The boot animation's small "central
+  light" dot and its circular sweep arc (`ui/animations/boot_animation.c`)
+  were created, animated, and then simply never deleted or faded out once
+  the Helios logo faded in over them - both sat there, amber dot dead
+  center, for as long as the boot scene stayed on screen. Fixed by
+  deleting both the moment the logo takes over (`arc_sweep_done_cb()`).
+- **Rings animate instead of jumping.** **User:** "il faudra aussi faire
+  une animation de l'anneau quand il change de valeur, un vrai lerp, pas
+  un decallage brut." `ui/home/energy_rings.c` now runs every ring value
+  change through an `lv_anim_t` (700ms, ease-out), canceling any
+  transition already in flight for that ring first so rapid updates don't
+  race each other.
+- **Ring track removed; a real gap where a ring is at 0% or not
+  configured.** **User:** "Tu peux aussi enlever les fonds des anneaux.
+  Pour les anneaux qui sont à zero, on dessine quand meme la fin et le
+  debut de l'anneau (un disque dans ces cas là vu que la fin et de lébut
+  sont à la meme valeur)." The always-visible dark gray background track
+  is gone - only the colored indicator draws now. First attempt assumed a
+  literal 0-length rounded arc would still render as a dot (start and end
+  caps coinciding); it doesn't - LVGL skips drawing an arc with nothing to
+  sweep, rounded caps or not, so the fix left rings at 0%/unconfigured
+  with no mark at all. **User:** "il manque le debut et la fin des
+  anneaux à 0 ou non configurés." Corrected by flooring the indicator's
+  value to a hair over 1 degree of sweep (`target < 3` out of the
+  0-1000 range) rather than a true 0, so the rounded cap always has just
+  enough arc to actually render as a small dot.
+- **Center text: icon instead of a text label.** **User:** "Pas de texte
+  non plus 'Home consumption', on met l'icone maison MDI au dessus de la
+  valeur numerique affichée." The "home consumption" caption under the
+  number is gone; a small MDI house icon (`mdiHome`, rasterized via the
+  existing `tools/asset-gen/svg_to_lvgl.py` pipeline into
+  `ui/home/assets/mdi_home_icon.c`, same tool used for the boot logo) now
+  sits above it instead. The status/error caption (e.g. "no source in
+  your Energy Dashboard") still uses that same label slot when there's
+  actually something to say - it's just empty text, not text at all, on
+  the happy path.
+- **Home consumption now matches Helios's own formula exactly.**
+  **User:** "la logique de calcul de la consommation de la maison est à
+  reprendre sur Helios, actuellement, tu ne fais qu'afficher la connexion
+  à l'import grid en consommation." The previous formula (`solar +
+  grid_import - grid_export`) was an independent, unverified guess -
+  missing the battery term entirely. Checked the real source this time
+  (`~/Developer/helios/src/core/energy.ts`, `consumptionLoad()`) instead
+  of guessing again: `load = production + gridImport - gridExport -
+  netBattery` (`netBattery = charge - discharge`, charge positive),
+  clamped at 0. `helios/energy_model`'s `render()` now mirrors it
+  verbatim.
+- **Number format preference: W/kW toggle + 0-3 decimal places.**
+  **User:** "je veux un toggle dans 'Display' qui permet de basculer
+  l'affichage en W ou en kW (W par défaut) et de définir le nombre de
+  decimal (un slider entre 0 et 3), 1 par défaut." Added
+  `energy_format_t` (`energy_config.h`, NVS-backed, same pattern as ring
+  limits) and a single shared `energy_format_power()` helper used by
+  *both* the rings' center text and `/display`'s status-panel values, so
+  there's exactly one formatting implementation instead of two that could
+  drift apart. `/display`'s existing limits form gained a unit `<select>`
+  and a decimals `<input type='range'>`, one Save button covering both
+  limits and format together.
+- **Settings-page prose: no em dashes, more paragraph breaks.**
+  **User:** "aéré et par pitié, pas de cadratins." The `/display` hint
+  text and connection-status strings used the project's usual
+  `word - word` dash-as-aside style throughout; rewritten as separate
+  sentences/short paragraphs with plain punctuation (commas, parentheses)
+  instead.
+- **Status-panel pill wrapped to two lines on long rows.** A `.pill`
+  badge (e.g. solar's "5 W") wrapped its own text vertically whenever the
+  row's label + long entity id pushed the row tight, because flexbox
+  shrinks items with no `flex-shrink:0` by default. Added
+  `flex-shrink:0;white-space:nowrap` to `.pill` and `min-width:0;
+  overflow-wrap:anywhere` to `.row .label` so the label wraps/shrinks
+  instead of the badge.
+
+All of the above verified live: rebuilt, reflashed, and reconnected to
+the user's real Home Assistant instance after every change in this
+round, no crashes, `/display`'s new unit/decimals fields round-tripped
+correctly through `/display/save` (confirmed switching to kW + 2
+decimals persisted and reflected back in the status panel).
+
+## Boot animation redesign + white flash fix, "V1" round (2026-08-13)
+
+**User:** "ok pour la v1, il ne nous manque plus grand chose : L'animation
+de chargement, on oublie l'anneau qui se remplit avec le point au milieu.
+A la place le logo d'helios ou chacune des 12 flammes du soleil se
+dessine au fur et a mesure du chargement. On n'affiche plus l'adresse IP
+au demarrage si on est connecté à Home Assistant."
+
+**Boot logo draws itself in, flame by flame.** `assets/brand/helios-logo.svg`
+turns out to already be one `<path>` with 13 separate "M...Z" subpaths -
+the 12 sun-flame rays plus the central disc - discovered by literally
+counting them rather than assuming. That's what makes a piece-by-piece
+reveal possible without hand-splitting the artwork. New tool
+`tools/asset-gen/svg_pieces_to_lvgl.py`: rasterizes each subpath alone at
+the same px-per-SVG-unit density as a full 440px render, then crops it to
+its own alpha bounding box (a single flame is a small fraction of the
+canvas) before baking it into an LVGL image - the 13 pieces together
+(~365KB raw) end up *smaller* in flash than the one old flattened 440x440
+image (~756KB) did. `boot_animation.c` was rewritten from scratch:
+`ui/animations/assets/helios_logo.c` (and the dot+arc+single-fade scene
+it drove) is gone, replaced by 13 small `lv_image` objects positioned via
+offsets baked into `helios_logo_pieces[]` at generation time, each fading
+in on its own staggered `lv_anim_t`.
+
+Getting the reveal order and feel right took several rounds of direct
+feedback, each rebuilt and reflashed in turn:
+
+- First attempt revealed the rays in the SVG's own source order, which
+  turned out to sweep counter-clockwise starting near 10 o'clock.
+  **User:** "dommage, dans l'autre sens l'affichage des petales du soleil
+  (sens horaire)" - reversed into a `s_reveal_order[]` lookup table so
+  the pieces stay in their original array (nothing else has to change)
+  but get revealed in a different sequence.
+- The reversed order still didn't start at the top. **User:** "ca aurait
+  ete bien de commencer par celui tout en haut :s" - computed each ray's
+  clock-angle from its `(center_dx, center_dy)` offset
+  (`atan2(dx, -dy)`) to find the one actually closest to 12 o'clock
+  (index 10, ~2 degrees) and made that the start of the sequence, sweeping
+  clockwise from there, disc always last.
+- The fade itself was too quick to see. **User:** "j'aimerai que tu les
+  fasses s'afficher en fading" then "et le fading, plus long aussi, on a
+  a peine le temps de le voir." Per-piece fade went 130ms -> 220ms ->
+  400ms, stagger 70ms -> 90ms, with an explicit `lv_anim_path_ease_out`
+  (total sequence now ~1.5s, still comfortably under the <3s boot
+  target).
+
+**White flash at power-on, found and actually fixed.** **User:** "le
+flash blanc au tout debut, on est obligé de l'avoir ?" First attempt:
+added `s_first_flush_done` (set from the panel IO's `on_color_trans_done`
+ISR) and had `lvgl_task` only ramp brightness to full once the first real
+LVGL frame had actually reached the panel, instead of turning brightness
+up inside `panel_init()` before LVGL even existed. **User:** "il est
+toujours là" - the fix was real but incomplete: `s_lcd_init_cmds[]` (the
+CO5300 init table, ported from Waveshare's factory firmware) already sent
+`{0x51, 0xFF}` - full brightness - as its *sixth* command, well before
+Sleep Out (`0x11`) and Display On (`0x29`) even ran, let alone before my
+later brightness-zero call. The panel was unblanked at full brightness
+against whatever garbage was in GRAM for the entire rest of init
+regardless of anything done afterward. Fixed at the actual source: that
+table entry is now `{0x51, 0x00}` - brightness starts at 0 before Sleep
+Out/Display On ever run, and only the `s_first_flush_done` mechanism from
+the first attempt ramps it up, once real content is confirmably on
+screen.
+
+**No IP notice when Home Assistant is already configured.** `main.c` now
+checks `settings_get_ha_config()` before deciding whether to register
+`wifi_sta_set_connected_cb(network_status_show_connected)` at all - if
+Home Assistant credentials are already saved, the device is heading for
+the energy rings anyway once it connects, so the IP notice (previously
+always shown the moment Wi-Fi came up) is skipped entirely and the boot
+logo stays up until the rings take over. Still shown as before when Home
+Assistant isn't configured yet, since that's the only way to find the
+settings app's address in that case. Tradeoff worth flagging: if Home
+Assistant is configured but the connection or Energy Dashboard discovery
+never succeeds, the screen has no fallback showing the IP either - not
+addressed this round.
+
+All rebuilt and reflashed after each change; no crashes throughout.
+
 ## Still open (need eyes/ears on the physical board)
 
 - [x] Panel orientation (`MADCTL = 0xC0`) and the doubled boot logo -
@@ -504,6 +862,17 @@ in the serial log across any of this.
       two rounds of user listening) - **disabled on boot anyway**, pending
       a sound design that isn't "absolutely awful"; still reachable at
       `/debug/speaker` for whenever that resumes.
+- [ ] Confirm the power-on white flash is actually gone now - the real
+      cause (full brightness baked into `s_lcd_init_cmds[]` itself, well
+      before the panel is even unblanked) was fixed this session, but
+      hasn't been re-confirmed live after the fix. The first attempt at
+      this looked right in code but the user still saw it, so treat this
+      one as unconfirmed until watched again.
+- [ ] No on-screen fallback if Home Assistant is configured but never
+      actually connects or its Energy Dashboard never gets populated -
+      the IP notice is skipped whenever HA credentials are saved (see
+      "V1 round" above), with no fallback screen if that trust turns out
+      to be misplaced. Not hit in practice yet, flagged as a real gap.
 - [ ] Confirm the microphone level test (`/debug/mic`) actually responds to
       real sound - the stereo-mode fix applies to the RX path too but
       hasn't been tried at all yet, silent or not.
@@ -522,13 +891,22 @@ in the serial log across any of this.
       USB-only configuration: does the board actually stay powered after
       the PWR button is released once V0.1 asserts the latch, exactly as
       it does in the vendor's battery-equipped reference?
-- [ ] Visual review of the energy rings on the actual round panel (layout,
-      arc widths/gaps, colors, center text legibility) - only verified so
-      far via `/display`'s status panel over `curl` and the entity model's
-      logic, not by looking at the physical screen with real entities
-      configured.
-- [ ] Configure real Home Assistant entity ids on `/display` (currently
-      cleared back to empty after testing) and confirm the rings actually
-      track live solar/grid/battery/home power over time, including the
-      grid/battery ring auto-switching between import/export and
-      charge/discharge.
+- [x] Visual review of the energy rings on the actual round panel - the
+      user watched it live this session and drove several real fixes
+      from what they saw (boot logo's stray dot, missing knob-vs-track
+      dot at 0%/unconfigured, hard-jump ring updates, "home consumption"
+      text). Not yet re-confirmed after the *latest* round (animated
+      transitions, the always-visible start/end dot, the house icon) -
+      those were fixed and flashed but not yet looked at again.
+- [ ] Confirm the grid ring actually auto-switches from blue (import) to
+      purple (export) with real data over time - the user's Shelly
+      reports both directions live, just hasn't been watched switch yet.
+- [ ] Battery ring untested end-to-end - nothing configured in the user's
+      Home Assistant Energy Dashboard for it yet. Should auto-discover
+      correctly once they add a battery source with a linked power
+      entity (`ha_ws_rescan()` via the "Rescan Energy Dashboard" button
+      on `/display`, no firmware change needed), but not actually tried.
+- [ ] Longer-run stability of `helios/ha_ws` - reconnect behavior across a
+      real Wi-Fi drop or Home Assistant restart, and whether free heap
+      stays flat over hours (only spot-checked a few times so far, no
+      leak evidence but no long run either).

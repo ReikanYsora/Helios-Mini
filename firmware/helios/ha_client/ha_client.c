@@ -92,11 +92,17 @@ ha_client_status_t ha_client_status_from_key(const char *key)
     return HA_CLIENT_STATUS_UNKNOWN;
 }
 
-ha_entity_status_t ha_client_get_entity_power(const char *url, const char *token,
-                                               const char *entity_id, float *value_out)
+/* Backs ha_client_get_entity_power(): GET `<url>/api/states/<entity_id>`,
+ * parse `state` as a float, and report the unit_of_measurement string too
+ * (truncated into unit_out) so the caller can convert kW/MW to W. */
+static ha_entity_status_t fetch_entity_state(const char *url, const char *token, const char *entity_id,
+                                              float *value_out, char *unit_out, size_t unit_out_len)
 {
     if (value_out != NULL) {
         *value_out = 0.0f;
+    }
+    if (unit_out != NULL && unit_out_len > 0) {
+        unit_out[0] = '\0';
     }
     if (entity_id == NULL || entity_id[0] == '\0') {
         return HA_ENTITY_STATUS_NOT_CONFIGURED;
@@ -169,18 +175,16 @@ ha_entity_status_t ha_client_get_entity_power(const char *url, const char *token
                     if (end == state->valuestring) {
                         result = HA_ENTITY_STATUS_NOT_NUMERIC;
                     } else {
-                        float multiplier = 1.0f;
-                        const cJSON *attrs = cJSON_GetObjectItemCaseSensitive(root, "attributes");
-                        const cJSON *unit = cJSON_GetObjectItemCaseSensitive(attrs, "unit_of_measurement");
-                        if (cJSON_IsString(unit) && unit->valuestring != NULL) {
-                            if (strcasecmp(unit->valuestring, "kW") == 0) {
-                                multiplier = 1000.0f;
-                            } else if (strcasecmp(unit->valuestring, "MW") == 0) {
-                                multiplier = 1000000.0f;
-                            }
-                        }
                         if (value_out != NULL) {
-                            *value_out = parsed * multiplier;
+                            *value_out = parsed;
+                        }
+                        if (unit_out != NULL && unit_out_len > 0) {
+                            const cJSON *attrs = cJSON_GetObjectItemCaseSensitive(root, "attributes");
+                            const cJSON *unit = cJSON_GetObjectItemCaseSensitive(attrs, "unit_of_measurement");
+                            if (cJSON_IsString(unit) && unit->valuestring != NULL) {
+                                strncpy(unit_out, unit->valuestring, unit_out_len - 1);
+                                unit_out[unit_out_len - 1] = '\0';
+                            }
                         }
                         result = HA_ENTITY_STATUS_OK;
                     }
@@ -194,6 +198,24 @@ ha_entity_status_t ha_client_get_entity_power(const char *url, const char *token
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return result;
+}
+
+ha_entity_status_t ha_client_get_entity_power(const char *url, const char *token,
+                                               const char *entity_id, float *value_out)
+{
+    float raw = 0.0f;
+    char unit[16] = {0};
+    ha_entity_status_t status = fetch_entity_state(url, token, entity_id, &raw, unit, sizeof(unit));
+    if (status == HA_ENTITY_STATUS_OK && value_out != NULL) {
+        float multiplier = 1.0f;
+        if (strcasecmp(unit, "kW") == 0) {
+            multiplier = 1000.0f;
+        } else if (strcasecmp(unit, "MW") == 0) {
+            multiplier = 1000000.0f;
+        }
+        *value_out = raw * multiplier;
+    }
+    return status;
 }
 
 const char *ha_entity_status_text(ha_entity_status_t status)

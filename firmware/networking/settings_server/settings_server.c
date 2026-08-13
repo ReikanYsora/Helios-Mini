@@ -8,6 +8,7 @@
 #include "mdi_icons.h"
 #include "energy_config.h"
 #include "energy_model.h"
+#include "ha_ws.h"
 
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -24,7 +25,6 @@ static const char *NVS_NAMESPACE = "helios_mini";
 #define SETTINGS_HA_URL_LEN       128
 #define SETTINGS_HA_TOKEN_LEN     256
 #define SETTINGS_MAX_SCAN_RESULTS 8
-#define SETTINGS_DISPLAY_FORM_LEN 1536 /* 6 entity ids (up to 128 chars each) + 4 limits */
 #define ICON_ON_ACCENT "#111" /* icon color for icons drawn on the amber accent button */
 
 /* ---- persisted HA config/status - unchanged from before this UI pass ---- */
@@ -78,7 +78,7 @@ static const char *PAGE_STYLE =
     ".row{display:flex;justify-content:space-between;align-items:center;padding:.55em 0;"
     "font-size:.9em;gap:1em;border-bottom:1px solid var(--border)}"
     ".row:last-child{border-bottom:none}"
-    ".row .label{color:var(--text-dim)}"
+    ".row .label{color:var(--text-dim);min-width:0;overflow-wrap:anywhere}"
     "input,button{width:100%;padding:.65em;margin:.4em 0;box-sizing:border-box;"
     "border-radius:8px;border:1px solid var(--border);background:#1a1a22;color:var(--text);"
     "font-size:1em}"
@@ -89,7 +89,7 @@ static const char *PAGE_STYLE =
     "a.link-button button{pointer-events:none}"
     "label{font-size:.85em;color:var(--text-dim);display:block;margin-top:.7em}"
     ".pill{display:inline-flex;align-items:center;gap:.35em;padding:.3em .7em;"
-    "border-radius:20px;font-size:.8em;font-weight:600}"
+    "border-radius:20px;font-size:.8em;font-weight:600;flex-shrink:0;white-space:nowrap}"
     ".pill.ok{background:rgba(124,217,146,.15);color:var(--ok)}"
     ".pill.bad{background:rgba(224,122,95,.15);color:var(--bad)}"
     ".pill.warn{background:rgba(224,180,95,.15);color:var(--warn)}"
@@ -466,154 +466,158 @@ static esp_err_t ha_scan_get_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* ---- /display : energy rings entity + limits configuration, live status ----
+/* ---- /display : auto-discovered Energy Dashboard sources + ring limits ----
  *
- * "gere TOUS LES CAS": every entity row is one of exactly five states -
- * not configured (no entity id saved) / Home Assistant not set up yet /
- * not tested yet (device just booted, first poll hasn't landed) / a real
- * ha_client error (not found, unavailable, not numeric, unauthorized,
- * unreachable) / OK with the live value. Nothing is ever silently blank. */
+ * Zero manual entity entry - helios/ha_ws reads Home Assistant's own
+ * Energy Dashboard configuration (Settings -> Dashboards -> Energy) and
+ * subscribes to live updates for whatever it finds. "gere TOUS LES CAS":
+ * every source row is one of exactly four states - not set up in Home
+ * Assistant's Energy Dashboard / Home Assistant not set up on Helios Mini
+ * at all / waiting for a first live update / a live value (flagged stale
+ * if it hasn't updated in a while). Nothing is ever silently blank. */
 
-static void format_watts_value(float watts, char *out, size_t out_len)
+static void format_age(int64_t age_ms, char *out, size_t out_len)
 {
-    if (watts >= 1000.0f || watts <= -1000.0f) {
-        snprintf(out, out_len, "%.2f kW", watts / 1000.0f);
+    int64_t s = age_ms / 1000;
+    if (s < 60) {
+        snprintf(out, out_len, "%llds ago", (long long)s);
+    } else if (s < 3600) {
+        snprintf(out, out_len, "%lldm ago", (long long)(s / 60));
     } else {
-        snprintf(out, out_len, "%.0f W", watts);
+        snprintf(out, out_len, "%lldh ago", (long long)(s / 3600));
     }
 }
 
-static void render_entity_row(httpd_req_t *req, const char *label, const char *entity_id,
-                               bool ha_ready, bool tested, ha_entity_status_t status, float value_w)
+static void render_source_row(httpd_req_t *req, const char *label, const ha_ws_source_t *src, bool ha_ready,
+                               const energy_format_t *fmt)
 {
     send_chunk(req, "<div class='row'><span class='label'>");
     send_chunk(req, label);
+    if (src->entity_id[0] != '\0') {
+        char escaped[HA_WS_ENTITY_LIST_LEN + 8];
+        http_form_html_escape(src->entity_id, escaped, sizeof(escaped));
+        send_chunk(req, "<br><small style='opacity:.6'>");
+        send_chunk(req, escaped);
+        send_chunk(req, "</small>");
+    }
     send_chunk(req, "</span><span class='pill ");
 
-    if (entity_id == NULL || entity_id[0] == '\0') {
-        send_chunk(req, "warn'>");
-        send_icon(req, ICON_CIRCLE_OFF_OUTLINE, "var(--text-dim)", 15);
-        send_chunk(req, "<span>not configured</span></span></div>");
-        return;
-    }
     if (!ha_ready) {
         send_chunk(req, "warn'>");
         send_icon(req, ICON_ALERT_CIRCLE, "var(--warn)", 15);
         send_chunk(req, "<span>Home Assistant not set up</span></span></div>");
         return;
     }
-    if (!tested) {
+    if (src->status == HA_WS_SOURCE_NOT_CONFIGURED) {
         send_chunk(req, "warn'>");
-        send_icon(req, ICON_ALERT_CIRCLE, "var(--warn)", 15);
-        send_chunk(req, "<span>not tested yet</span></span></div>");
+        send_icon(req, ICON_CIRCLE_OFF_OUTLINE, "var(--text-dim)", 15);
+        send_chunk(req, "<span>not set up in your Energy Dashboard</span></span></div>");
         return;
     }
-    if (status == HA_ENTITY_STATUS_OK) {
-        char value_text[24];
-        format_watts_value(value_w, value_text, sizeof(value_text));
-        send_chunk(req, "ok'>");
-        send_icon(req, ICON_CHECK_CIRCLE, "var(--ok)", 15);
-        send_chunk(req, "<span>");
-        send_chunk(req, value_text);
-        send_chunk(req, "</span></span></div>");
+    if (src->status == HA_WS_SOURCE_WAITING) {
+        send_chunk(req, "warn'>");
+        send_icon(req, ICON_ALERT_CIRCLE, "var(--warn)", 15);
+        send_chunk(req, "<span>waiting for first update</span></span></div>");
         return;
     }
 
-    send_chunk(req, "bad'>");
-    send_icon(req, ICON_ALERT_CIRCLE, "var(--bad)", 15);
+    char value_text[24];
+    energy_format_power(src->power_w, fmt, value_text, sizeof(value_text));
+
+    if (src->status == HA_WS_SOURCE_STALE) {
+        char age_text[24];
+        format_age(src->age_ms, age_text, sizeof(age_text));
+        send_chunk(req, "warn'>");
+        send_icon(req, ICON_ALERT_CIRCLE, "var(--warn)", 15);
+        send_chunk(req, "<span>");
+        send_chunk(req, value_text);
+        send_chunk(req, " (stale, ");
+        send_chunk(req, age_text);
+        send_chunk(req, ")</span></span></div>");
+        return;
+    }
+
+    send_chunk(req, "ok'>");
+    send_icon(req, ICON_CHECK_CIRCLE, "var(--ok)", 15);
     send_chunk(req, "<span>");
-    send_chunk(req, ha_entity_status_text(status));
+    send_chunk(req, value_text);
     send_chunk(req, "</span></span></div>");
 }
 
 static esp_err_t display_get_handler(httpd_req_t *req)
 {
-    energy_entity_config_t entities;
     energy_limits_t limits;
-    energy_config_load_entities(&entities);
     energy_config_load_limits(&limits);
+    energy_format_t fmt;
+    energy_config_load_format(&fmt);
 
     char ha_url[SETTINGS_HA_URL_LEN] = {0};
     char ha_token[SETTINGS_HA_TOKEN_LEN] = {0};
     bool ha_ready = settings_get_ha_config(ha_url, sizeof(ha_url), ha_token, sizeof(ha_token));
 
-    energy_model_status_t mstatus;
-    energy_model_get_status(&mstatus);
-    bool tested = mstatus.polled_once;
+    ha_ws_status_t ws;
+    ha_ws_get_status(&ws);
 
     open_page(req, "Helios Mini - Display", "display");
     send_chunk(req, "<h1>Display</h1>");
 
     if (!ha_ready) {
         send_chunk(req,
-            "<p class='hint'>Home Assistant isn't set up yet, so there's nothing to poll. "
-            "<a href='/ha'>Configure it first</a>, then come back here.</p>");
+            "<p class='hint'>Home Assistant isn't set up yet. <a href='/ha'>Configure it "
+            "first</a>, then come back here.</p>");
+        close_page(req);
+        return ESP_OK;
     }
 
-    send_chunk(req, "<h2>Entity status</h2><div class='card'>");
-    render_entity_row(req, "Solar production", entities.solar, ha_ready, tested,
-                       mstatus.solar.status, mstatus.solar.last_value_w);
-    render_entity_row(req, "Grid import", entities.grid_import, ha_ready, tested,
-                       mstatus.grid_import.status, mstatus.grid_import.last_value_w);
-    render_entity_row(req, "Grid export", entities.grid_export, ha_ready, tested,
-                       mstatus.grid_export.status, mstatus.grid_export.last_value_w);
-    render_entity_row(req, "Battery charge", entities.battery_charge, ha_ready, tested,
-                       mstatus.battery_charge.status, mstatus.battery_charge.last_value_w);
-    render_entity_row(req, "Battery discharge", entities.battery_discharge, ha_ready, tested,
-                       mstatus.battery_discharge.status, mstatus.battery_discharge.last_value_w);
-    render_entity_row(req, "Home consumption", entities.home, ha_ready, tested,
-                       mstatus.home.status, mstatus.home.last_value_w);
+    const char *link_class = (ws.link == HA_WS_LINK_CONNECTED) ? "ok"
+                            : (ws.link == HA_WS_LINK_AUTH_FAILED) ? "bad" : "warn";
+    const char *link_text = (ws.link == HA_WS_LINK_CONNECTED) ? "connected"
+                           : (ws.link == HA_WS_LINK_AUTH_FAILED)
+                               ? "token rejected, fix it on the Home Assistant page"
+                           : (ws.link == HA_WS_LINK_CONNECTING) ? "connecting\xe2\x80\xa6"
+                           : "disconnected, retrying";
+    char link_line[300];
+    snprintf(link_line, sizeof(link_line), "<p class='pill %s'>%s</p>", link_class, link_text);
+    send_chunk(req, link_line);
+
+    if (ws.link == HA_WS_LINK_CONNECTED && ws.prefs_loaded && !ws.energy_dashboard_configured) {
+        send_chunk(req,
+            "<p class='hint'>Your Home Assistant instance doesn't have the Energy Dashboard "
+            "configured yet.</p>"
+            "<p class='hint'>In Home Assistant, go to <b>Settings &rarr; Dashboards &rarr; "
+            "Energy</b>, add your solar/grid/battery entities there, then hit Rescan "
+            "below.</p>"
+            "<p class='hint'>Helios Mini reads its ring sources straight from that "
+            "configuration. Nothing to type here.</p>");
+    }
+
+    send_chunk(req, "<h2>Energy Dashboard sources</h2><div class='card'>");
+    render_source_row(req, "Solar production", &ws.solar, ha_ready, &fmt);
+    render_source_row(req, "Grid import", &ws.grid_import, ha_ready, &fmt);
+    render_source_row(req, "Grid export", &ws.grid_export, ha_ready, &fmt);
+    render_source_row(req, "Battery charge", &ws.battery_charge, ha_ready, &fmt);
+    render_source_row(req, "Battery discharge", &ws.battery_discharge, ha_ready, &fmt);
     send_chunk(req, "</div>");
 
-    if (tested) {
-        send_chunk(req,
-            "<p class='hint'>Live status, refreshed automatically every 10s while the device "
-            "is on.</p>");
-    }
-
-    send_chunk(req, "<h2>Entities</h2><form method='POST' action='/display/save'>");
-
-    char escaped[ENERGY_ENTITY_ID_LEN + 40];
+    send_chunk(req, "<a class='link-button' href='/display/rescan'><button type='button' class='secondary'>");
+    send_icon(req, ICON_REFRESH, "var(--text)", 18);
+    send_chunk(req, "<span>Rescan Energy Dashboard</span></button></a>");
 
     send_chunk(req,
-        "<label>Solar production (W) &mdash; leave empty if there's no PV</label>");
-    http_form_html_escape(entities.solar, escaped, sizeof(escaped));
-    send_chunk(req, "<input type='text' name='ent_solar' placeholder='sensor.solar_power' value='");
-    send_chunk(req, escaped);
-    send_chunk(req, "'>");
+        "<p class='hint'>Sources feeding the rings come straight from your Home Assistant "
+        "Energy Dashboard configuration. Nothing to type here.</p>"
+        "<p class='hint'>Only the live power (W) entity linked to each source is used, the "
+        "same one the Helios card itself reads. It updates the instant Home Assistant pushes "
+        "a new reading.</p>"
+        "<p class='hint'>A source is flagged \xe2\x80\x9cstale\xe2\x80\x9d if it hasn't sent "
+        "one in a while. It shows \xe2\x80\x9cnot set up in your Energy Dashboard\xe2\x80\x9d "
+        "if that source has no power entity linked there at all (its cumulative energy/kWh "
+        "statistic, if any, is never used).</p>"
+        "<p class='hint'>The grid and battery rings each show whichever direction is "
+        "currently active. For example, the grid ring fills blue while importing, then "
+        "switches to purple once exporting.</p>");
 
-    send_chunk(req, "<label>Grid import (W)</label>");
-    http_form_html_escape(entities.grid_import, escaped, sizeof(escaped));
-    send_chunk(req, "<input type='text' name='ent_gimport' placeholder='sensor.grid_power_import' value='");
-    send_chunk(req, escaped);
-    send_chunk(req, "'>");
-
-    send_chunk(req, "<label>Grid export (W)</label>");
-    http_form_html_escape(entities.grid_export, escaped, sizeof(escaped));
-    send_chunk(req, "<input type='text' name='ent_gexport' placeholder='sensor.grid_power_export' value='");
-    send_chunk(req, escaped);
-    send_chunk(req, "'>");
-
-    send_chunk(req,
-        "<label>Battery charge (W) &mdash; leave empty if there's no battery</label>");
-    http_form_html_escape(entities.battery_charge, escaped, sizeof(escaped));
-    send_chunk(req, "<input type='text' name='ent_bcharge' placeholder='sensor.battery_power_charge' value='");
-    send_chunk(req, escaped);
-    send_chunk(req, "'>");
-
-    send_chunk(req, "<label>Battery discharge (W)</label>");
-    http_form_html_escape(entities.battery_discharge, escaped, sizeof(escaped));
-    send_chunk(req, "<input type='text' name='ent_bdischarge' placeholder='sensor.battery_power_discharge' value='");
-    send_chunk(req, escaped);
-    send_chunk(req, "'>");
-
-    send_chunk(req, "<label>Home consumption (W) &mdash; shown as text in the center</label>");
-    http_form_html_escape(entities.home, escaped, sizeof(escaped));
-    send_chunk(req, "<input type='text' name='ent_home' placeholder='sensor.home_power' value='");
-    send_chunk(req, escaped);
-    send_chunk(req, "'>");
-
-    send_chunk(req, "<h2>Ring limits (100% reference)</h2>");
+    send_chunk(req, "<h2>Ring limits (100% reference)</h2><form method='POST' action='/display/save'>");
 
     char num[32];
 
@@ -636,22 +640,31 @@ static esp_err_t display_get_handler(httpd_req_t *req)
     send_chunk(req, "'>");
 
     snprintf(num, sizeof(num), "%.0f", limits.max_battery_w);
-    send_chunk(req, "<label>Battery ring max (W) &mdash; shared by charge and discharge</label>"
+    send_chunk(req, "<label>Battery ring max (W), shared by charge and discharge</label>"
         "<input type='number' step='1' min='1' name='lim_battery' value='");
     send_chunk(req, num);
     send_chunk(req, "'>");
 
+    send_chunk(req, "<h2>Number format</h2>");
+
+    send_chunk(req, "<label>Show power as</label><select name='unit'>");
+    send_chunk(req, fmt.use_kw ? "<option value='w'>Watts (W)</option>"
+                                  "<option value='kw' selected>Kilowatts (kW)</option>"
+                                : "<option value='w' selected>Watts (W)</option>"
+                                  "<option value='kw'>Kilowatts (kW)</option>");
+    send_chunk(req, "</select>");
+
+    char decimals_str[4];
+    snprintf(decimals_str, sizeof(decimals_str), "%d", fmt.decimals);
+    send_chunk(req, "<label>Decimal places: ");
+    send_chunk(req, decimals_str);
+    send_chunk(req, "</label><input type='range' min='0' max='3' step='1' name='decimals' value='");
+    send_chunk(req, decimals_str);
+    send_chunk(req, "'>");
+
     send_chunk(req, "<button type='submit'>");
     send_icon(req, ICON_CONTENT_SAVE, ICON_ON_ACCENT, 18);
-    send_chunk(req, "<span>Save &amp; test</span></button></form>");
-
-    send_chunk(req,
-        "<p class='hint'>Entity ids come from Home Assistant (Developer tools &rarr; States). "
-        "Values reported in kW are detected automatically and converted. The grid and battery "
-        "rings each show whichever direction is currently active - e.g. the grid ring fills blue "
-        "while importing, then switches to purple automatically once exporting. Leave the solar "
-        "and/or battery entities empty entirely if this home has no panels or no battery - that "
-        "ring simply stays off instead of showing a misleading empty circle.</p>");
+    send_chunk(req, "<span>Save</span></button></form>");
 
     close_page(req);
     return ESP_OK;
@@ -659,27 +672,18 @@ static esp_err_t display_get_handler(httpd_req_t *req)
 
 static esp_err_t display_save_post_handler(httpd_req_t *req)
 {
-    if (req->content_len <= 0 || req->content_len > SETTINGS_DISPLAY_FORM_LEN) {
+    if (req->content_len <= 0 || req->content_len > SETTINGS_MAX_FORM_LEN) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "form too large");
         return ESP_FAIL;
     }
 
-    char body[SETTINGS_DISPLAY_FORM_LEN + 1] = {0};
+    char body[SETTINGS_MAX_FORM_LEN + 1] = {0};
     int received = httpd_req_recv(req, body, req->content_len);
     if (received <= 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "read failed");
         return ESP_FAIL;
     }
     body[received] = '\0';
-
-    energy_entity_config_t entities = {0};
-    http_form_get(body, "ent_solar", entities.solar, sizeof(entities.solar));
-    http_form_get(body, "ent_gimport", entities.grid_import, sizeof(entities.grid_import));
-    http_form_get(body, "ent_gexport", entities.grid_export, sizeof(entities.grid_export));
-    http_form_get(body, "ent_bcharge", entities.battery_charge, sizeof(entities.battery_charge));
-    http_form_get(body, "ent_bdischarge", entities.battery_discharge, sizeof(entities.battery_discharge));
-    http_form_get(body, "ent_home", entities.home, sizeof(entities.home));
-    energy_config_save_entities(&entities);
 
     energy_limits_t limits;
     energy_config_load_limits(&limits); /* start from current/defaults, only overwrite what parses */
@@ -717,68 +721,37 @@ static esp_err_t display_save_post_handler(httpd_req_t *req)
     }
     energy_config_save_limits(&limits);
 
-    energy_model_refresh_config(); /* wake the background poller/rings now, don't wait up to 10s */
-
-    char ha_url[SETTINGS_HA_URL_LEN] = {0};
-    char ha_token[SETTINGS_HA_TOKEN_LEN] = {0};
-    bool ha_ready = settings_get_ha_config(ha_url, sizeof(ha_url), ha_token, sizeof(ha_token));
-
-    /* Test every newly-saved entity right now, synchronously - "feedback,
-     * not silence", same reasoning as /ha/save. Only entities that were
-     * actually filled in are worth a network round trip. */
-    ha_entity_status_t st_solar = HA_ENTITY_STATUS_NOT_CONFIGURED;
-    ha_entity_status_t st_gimport = HA_ENTITY_STATUS_NOT_CONFIGURED;
-    ha_entity_status_t st_gexport = HA_ENTITY_STATUS_NOT_CONFIGURED;
-    ha_entity_status_t st_bcharge = HA_ENTITY_STATUS_NOT_CONFIGURED;
-    ha_entity_status_t st_bdischarge = HA_ENTITY_STATUS_NOT_CONFIGURED;
-    ha_entity_status_t st_home = HA_ENTITY_STATUS_NOT_CONFIGURED;
-    float v_solar = 0, v_gimport = 0, v_gexport = 0, v_bcharge = 0, v_bdischarge = 0, v_home = 0;
-
-    if (ha_ready) {
-        if (entities.solar[0]) {
-            st_solar = ha_client_get_entity_power(ha_url, ha_token, entities.solar, &v_solar);
-        }
-        if (entities.grid_import[0]) {
-            st_gimport = ha_client_get_entity_power(ha_url, ha_token, entities.grid_import, &v_gimport);
-        }
-        if (entities.grid_export[0]) {
-            st_gexport = ha_client_get_entity_power(ha_url, ha_token, entities.grid_export, &v_gexport);
-        }
-        if (entities.battery_charge[0]) {
-            st_bcharge = ha_client_get_entity_power(ha_url, ha_token, entities.battery_charge, &v_bcharge);
-        }
-        if (entities.battery_discharge[0]) {
-            st_bdischarge = ha_client_get_entity_power(ha_url, ha_token, entities.battery_discharge, &v_bdischarge);
-        }
-        if (entities.home[0]) {
-            st_home = ha_client_get_entity_power(ha_url, ha_token, entities.home, &v_home);
+    energy_format_t fmt;
+    energy_config_load_format(&fmt);
+    char unit[4] = {0};
+    http_form_get(body, "unit", unit, sizeof(unit));
+    if (unit[0] != '\0') {
+        fmt.use_kw = (strcmp(unit, "kw") == 0);
+    }
+    char decimals[4] = {0};
+    http_form_get(body, "decimals", decimals, sizeof(decimals));
+    if (decimals[0] != '\0') {
+        int parsed_decimals = atoi(decimals);
+        if (parsed_decimals >= 0 && parsed_decimals <= 3) {
+            fmt.decimals = parsed_decimals;
         }
     }
+    energy_config_save_format(&fmt);
 
-    ESP_LOGI(TAG, "display settings saved; entity test (ha_ready=%d): solar=%d gimport=%d gexport=%d "
-             "bcharge=%d bdischarge=%d home=%d",
-             ha_ready, st_solar, st_gimport, st_gexport, st_bcharge, st_bdischarge, st_home);
+    energy_model_refresh(); /* wake the render loop now, don't wait up to 3s */
 
-    open_page(req, "Helios Mini - Display", "display");
-    send_chunk(req, "<h1>Saved</h1>");
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/display");
+    httpd_resp_send(req, NULL, 0);
+    return ESP_OK;
+}
 
-    if (!ha_ready) {
-        send_chunk(req,
-            "<p class='hint'>Saved, but Home Assistant isn't set up yet so nothing could be "
-            "tested. <a href='/ha'>Configure it</a>, then revisit this page.</p>");
-    }
-
-    send_chunk(req, "<div class='card'>");
-    render_entity_row(req, "Solar production", entities.solar, ha_ready, ha_ready, st_solar, v_solar);
-    render_entity_row(req, "Grid import", entities.grid_import, ha_ready, ha_ready, st_gimport, v_gimport);
-    render_entity_row(req, "Grid export", entities.grid_export, ha_ready, ha_ready, st_gexport, v_gexport);
-    render_entity_row(req, "Battery charge", entities.battery_charge, ha_ready, ha_ready, st_bcharge, v_bcharge);
-    render_entity_row(req, "Battery discharge", entities.battery_discharge, ha_ready, ha_ready, st_bdischarge, v_bdischarge);
-    render_entity_row(req, "Home consumption", entities.home, ha_ready, ha_ready, st_home, v_home);
-    send_chunk(req, "</div>");
-
-    send_chunk(req, "<p><a href='/display'>&larr; Back</a></p>");
-    close_page(req);
+static esp_err_t display_rescan_handler(httpd_req_t *req)
+{
+    ha_ws_rescan();
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/display");
+    httpd_resp_send(req, NULL, 0);
     return ESP_OK;
 }
 
@@ -897,6 +870,7 @@ void settings_server_start(void)
         { .uri = "/ha/scan",            .method = HTTP_GET,  .handler = ha_scan_get_handler },
         { .uri = "/display",            .method = HTTP_GET,  .handler = display_get_handler },
         { .uri = "/display/save",       .method = HTTP_POST, .handler = display_save_post_handler },
+        { .uri = "/display/rescan",     .method = HTTP_GET,  .handler = display_rescan_handler },
         { .uri = "/debug",              .method = HTTP_GET,  .handler = debug_get_handler },
         { .uri = "/debug/screen",       .method = HTTP_GET,  .handler = debug_screen_handler },
         { .uri = "/debug/speaker",      .method = HTTP_GET,  .handler = debug_speaker_handler },
