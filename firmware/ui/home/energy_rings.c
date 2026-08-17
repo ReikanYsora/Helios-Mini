@@ -4,7 +4,6 @@
 #include "qr.h"
 #include "figtree.h"
 
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -36,23 +35,13 @@ LV_IMAGE_DECLARE(mdi_wifi);
 #define RING_GRID_DIAM        (RING_SOLAR_DIAM - 2 * (RING_WIDTH + RING_GAP))
 #define RING_BATTERY_DIAM     (RING_GRID_DIAM - 2 * (RING_WIDTH + RING_GAP))
 
-/* Apple-Watch activity-ring look: a full dim groove behind every ring (the
- * ring's own colour knocked back toward black) with the bright fill riding
- * over it, and a small lighter-shade disc marking the fill's leading tip -
- * the tip marker Apple draws an arrow glyph in, a plain bead here. */
-#define RING_TIP_DIAM     (RING_WIDTH + 2)
-#define RING_TRACK_MIX     70   /* groove = ~27% ring colour over black */
-#define RING_TIP_MIX      180   /* tip disc = ring colour lifted ~30% toward white */
+/* Ring look: just the bright colour fill over the black background - no dim
+ * track behind it, no tip bead. Clean and quiet. */
 
 /* The general view's centre number is a fixed Figtree 32 - one size, never
  * resized under the reading (which read as jumpy). 32 keeps even a
  * five-digit "99999 W" inside the clear disc within the innermost ring. */
 #define CENTER_TEXT_FONT   figtree_32
-
-/* Stroke centreline radius for a ring of the given outer diameter - where
- * its tip bead rides. The bead disc is reachable from the arc through its
- * user_data, so no per-ring bookkeeping struct is needed. */
-#define RING_CENTERLINE_R(arc)  (lv_obj_get_width(arc) / 2 - RING_WIDTH / 2)
 
 /* Hero views (solar/grid/battery) borrow Helios's own HUD-chip visual
  * language instead of a ring: a pill chip (icon + value, 2px border in
@@ -196,11 +185,11 @@ static lv_obj_t *create_ring(lv_obj_t *parent, int diameter, int width)
     lv_obj_set_style_outline_width(arc, 0, LV_PART_KNOB);
     lv_obj_set_style_pad_all(arc, 0, LV_PART_KNOB);
 
-    /* Dim groove behind the fill (colour set per-ring at update time), the
-     * full-circle track the bright indicator rides over. bg_opa stays off -
-     * that's the widget's rectangle, not the ring. */
-    lv_obj_set_style_arc_opa(arc, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(arc, width, LV_PART_MAIN);
+    /* No visible track - only the colored indicator is drawn. At 0% its
+     * start and end angles coincide, and with rounded caps that zero-length
+     * arc still renders as a small dot marking the ring's start, rather than
+     * nothing at all. */
+    lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
 
     lv_obj_set_style_arc_width(arc, width, LV_PART_INDICATOR);
@@ -208,49 +197,24 @@ static lv_obj_t *create_ring(lv_obj_t *parent, int diameter, int width)
      * start and end coincide and the rounded cap still shows a small dot. */
     lv_obj_set_style_arc_rounded(arc, true, LV_PART_INDICATOR);
 
-    /* Leading-tip bead: a small disc pinned to the fill's front edge,
-     * repositioned as the value animates (arc_anim_exec_cb). Sits on the
-     * stroke centreline, starting at 12 o'clock where a 0% fill begins.
-     * Stashed on the arc's user_data so both the animation and the colour
-     * update can reach it - and torn down with the arc by lv_obj_clean(). */
-    lv_obj_t *disc = lv_obj_create(parent);
-    lv_obj_remove_style_all(disc);
-    lv_obj_set_size(disc, RING_TIP_DIAM, RING_TIP_DIAM);
-    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(disc, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(disc, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(disc, LV_ALIGN_CENTER, 0, -(diameter / 2 - width / 2));
-    lv_obj_set_user_data(arc, disc);
     return arc;
 }
 
-/* Ring fill transitions are animated (a real lerp, via LVGL's own
- * animation timer - not a hard jump) so a new reading visibly sweeps into
- * place instead of snapping, the way an Apple Watch ring fills. */
-#define RING_ANIM_MS 700
+/* Ring fills are animated (a real lerp via LVGL's own timer, not a hard
+ * jump). RING_ANIM_MS is an ordinary value change; the first reveal is a
+ * slower, staggered entrance (RING_ENTRANCE_MS per ring, RING_STAGGER_MS
+ * apart), so the rings unfurl from the outside in rather than snapping in. */
+#define RING_ANIM_MS      700
+#define RING_ENTRANCE_MS  900
+#define RING_STAGGER_MS   110
 
-/* Pin a ring's tip bead to the fill's leading edge. 0% starts at 12
- * o'clock (rotation 270) and fills clockwise, so the angle is 270deg +
- * value's share of the full turn, and the offset from centre lands the
- * bead on the stroke centreline. */
-static void position_tip_disc(lv_obj_t *arc)
-{
-    lv_obj_t *disc = lv_obj_get_user_data(arc);
-    if (disc == NULL) {
-        return;
-    }
-    int32_t r = RING_CENTERLINE_R(arc);
-    float ang = (270.0f + lv_arc_get_value(arc) / 1000.0f * 360.0f) * 0.017453293f;
-    int32_t dx = (int32_t)lroundf(r * cosf(ang));
-    int32_t dy = (int32_t)lroundf(r * sinf(ang));
-    lv_obj_align(disc, LV_ALIGN_CENTER, dx, dy);
-}
+/* The staggered entrance plays once, on the first data update after the
+ * general view is (re)built. */
+static bool s_general_entrance_done;
 
 static void arc_anim_exec_cb(void *var, int32_t value)
 {
     lv_arc_set_value((lv_obj_t *)var, value);
-    position_tip_disc((lv_obj_t *)var);
 }
 
 static void animate_arc_to(lv_obj_t *arc, int32_t target_value)
@@ -267,6 +231,25 @@ static void animate_arc_to(lv_obj_t *arc, int32_t target_value)
     lv_anim_set_exec_cb(&a, arc_anim_exec_cb);
     lv_anim_set_values(&a, current, target_value);
     lv_anim_set_time(&a, RING_ANIM_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
+}
+
+/* First reveal for one ring: fill from empty to the reading with a gentle
+ * decelerating ease and a per-ring delay, so the rings arrive one after the
+ * other instead of all at once. */
+static void animate_arc_entrance(lv_obj_t *arc, int32_t target_value, uint32_t delay_ms)
+{
+    lv_arc_set_value(arc, 0);
+    lv_anim_delete(arc, arc_anim_exec_cb);
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, arc);
+    lv_anim_set_exec_cb(&a, arc_anim_exec_cb);
+    lv_anim_set_values(&a, 0, target_value);
+    lv_anim_set_time(&a, RING_ENTRANCE_MS);
+    lv_anim_set_delay(&a, delay_ms);
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_start(&a);
 }
@@ -292,23 +275,17 @@ static int32_t ring_target_value(const energy_ring_value_t *value, bool visible)
     return target;
 }
 
-/* Applies one metric colour across a ring's three parts: bright fill,
- * dimmed groove, and lighter tip bead. */
+/* Sets a ring's metric colour on the bright fill. */
 static void set_ring_colors(lv_obj_t *arc, uint32_t hex)
 {
-    lv_color_t c = lv_color_hex(hex);
-    lv_obj_set_style_arc_color(arc, c, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(arc, lv_color_mix(c, lv_color_black(), RING_TRACK_MIX), LV_PART_MAIN);
-    lv_obj_t *disc = lv_obj_get_user_data(arc);
-    if (disc != NULL) {
-        lv_obj_set_style_bg_color(disc, lv_color_mix(c, lv_color_white(), RING_TIP_MIX), 0);
-    }
+    lv_obj_set_style_arc_color(arc, lv_color_hex(hex), LV_PART_INDICATOR);
 }
 
 /* ---- general view (page 0) ---- */
 
 static void build_general_view(lv_obj_t *tile)
 {
+    s_general_entrance_done = false;
     s_arc_irradiance = create_ring(tile, RING_IRRADIANCE_DIAM, RING_WIDTH);
     s_arc_solar = create_ring(tile, RING_SOLAR_DIAM, RING_WIDTH);
     s_arc_grid = create_ring(tile, RING_GRID_DIAM, RING_WIDTH);
@@ -332,21 +309,44 @@ static void build_general_view(lv_obj_t *tile)
     lv_obj_set_style_text_color(s_center_sub, lv_color_hex(0x9a9aa5), 0);
     lv_label_set_text(s_center_sub, "");
     lv_obj_align_to(s_center_sub, s_center_text, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
+
+    /* The centre cluster starts hidden and fades up on the first reveal (see
+     * update_general_view), so it arrives once the rings are set rather than
+     * flashing in at full opacity during the stagger delay. */
+    lv_obj_set_style_opa(s_center_text, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_opa(s_center_icon, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_opa(s_center_sub, LV_OPA_TRANSP, 0);
 }
 
 static void update_general_view(const energy_display_t *d)
 {
-    animate_arc_to(s_arc_irradiance, ring_target_value(&d->irradiance, d->irradiance.visible));
     set_ring_colors(s_arc_irradiance, d->irradiance.color_hex);
-
-    animate_arc_to(s_arc_solar, ring_target_value(&d->solar, d->solar.visible));
     set_ring_colors(s_arc_solar, d->solar.color_hex);
-
-    animate_arc_to(s_arc_grid, ring_target_value(&d->grid, d->grid.visible));
     set_ring_colors(s_arc_grid, d->grid.color_hex);
-
-    animate_arc_to(s_arc_battery, ring_target_value(&d->battery, d->battery.visible));
     set_ring_colors(s_arc_battery, d->battery.color_hex);
+
+    int32_t t_irr = ring_target_value(&d->irradiance, d->irradiance.visible);
+    int32_t t_sol = ring_target_value(&d->solar, d->solar.visible);
+    int32_t t_grd = ring_target_value(&d->grid, d->grid.visible);
+    int32_t t_bat = ring_target_value(&d->battery, d->battery.visible);
+
+    if (!s_general_entrance_done) {
+        /* First reveal: the rings unfurl from the outside in, each a beat
+         * after the last, and the centre cluster fades up once they're set. */
+        animate_arc_entrance(s_arc_irradiance, t_irr, 0 * RING_STAGGER_MS);
+        animate_arc_entrance(s_arc_solar,      t_sol, 1 * RING_STAGGER_MS);
+        animate_arc_entrance(s_arc_grid,       t_grd, 2 * RING_STAGGER_MS);
+        animate_arc_entrance(s_arc_battery,    t_bat, 3 * RING_STAGGER_MS);
+        lv_obj_fade_in(s_center_icon, 460, 4 * RING_STAGGER_MS);
+        lv_obj_fade_in(s_center_text, 460, 4 * RING_STAGGER_MS);
+        lv_obj_fade_in(s_center_sub,  460, 4 * RING_STAGGER_MS);
+        s_general_entrance_done = true;
+    } else {
+        animate_arc_to(s_arc_irradiance, t_irr);
+        animate_arc_to(s_arc_solar,      t_sol);
+        animate_arc_to(s_arc_grid,       t_grd);
+        animate_arc_to(s_arc_battery,    t_bat);
+    }
 
     lv_label_set_text(s_center_text, d->center_text);
     lv_label_set_text(s_center_sub, d->center_sub);
