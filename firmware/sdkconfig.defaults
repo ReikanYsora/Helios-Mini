@@ -52,3 +52,13 @@ CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_LV_USE_SNAPSHOT=y
 # lv_qrcode - onboarding QR codes on screen (ui/qr).
 CONFIG_LV_USE_QRCODE=y
+
+# --- Performance (see docs/HARDWARE_REFERENCE.md and the perf audit) ---
+# Max out the S3: 240 MHz core and 80 MHz octal PSRAM. The LVGL draw
+# buffers live in PSRAM, so its clock is a direct lever on render/flush
+# throughput. Both validated on real hardware; back off (160 / 40M) if the
+# board shows instability.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_SPIRAM_SPEED_80M=y
+# Target 60 fps for the swipe and animations (was 33 ms / ~30 fps).
+CONFIG_LV_DEF_REFR_PERIOD=16

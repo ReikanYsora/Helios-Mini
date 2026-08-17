@@ -30,7 +30,13 @@
 #define HELIOS_LVGL_BUF_LINES          45
 #define HELIOS_LVGL_TICK_MS            2
 #define HELIOS_LVGL_TASK_STACK         (8 * 1024)
-#define HELIOS_LVGL_TASK_PRIORITY      2
+/* Pinned to the APP core (core 1) at display_init() so the render/flush
+ * loop never competes with the Wi-Fi stack (which lives on the PRO core,
+ * core 0, at a much higher priority): a network burst used to preempt this
+ * task mid-frame and drop swipe frames. Priority sits above the app's own
+ * background tasks so it also wins its core cleanly. */
+#define HELIOS_LVGL_TASK_PRIORITY      4
+#define HELIOS_LVGL_TASK_CORE          1
 #define HELIOS_LVGL_TASK_MAX_DELAY_MS  500
 #define HELIOS_LVGL_TASK_MIN_DELAY_MS  5
 
@@ -98,13 +104,12 @@ static void panel_init(void)
         .cs_gpio_num = HELIOS_PIN_LCD_CS,
         .dc_gpio_num = -1,
         .spi_mode = 0,
-        /* 40 -> 60 MHz: the swipe's dominant cost is raw bytes-on-wire time
+        /* 60 -> 80 MHz: the swipe's dominant cost is raw bytes-on-wire time
          * (a full 466x466x16bpp redraw is ~430 KB, already close to one
-         * frame's budget at 40 MHz), not just flush-call overhead. Stepping
-         * up conservatively rather than jumping to this controller's
-         * theoretical max - watch for any tearing/glitching on real
-         * hardware and back off to 40 MHz if so. See docs/HARDWARE_REFERENCE.md. */
-        .pclk_hz = 60 * 1000 * 1000,
+         * frame's budget), not just flush-call overhead, so the wire clock
+         * is a direct lever on it. Watch for any tearing/glitching on real
+         * hardware and back off to 60 MHz if so. See docs/HARDWARE_REFERENCE.md. */
+        .pclk_hz = 80 * 1000 * 1000,
         .trans_queue_depth = 10,
         .on_color_trans_done = on_color_trans_done,
         .lcd_cmd_bits = 32,
@@ -400,5 +405,6 @@ void display_init(void)
     ESP_ERROR_CHECK(esp_timer_create(&tick_args, &tick_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, HELIOS_LVGL_TICK_MS * 1000));
 
-    xTaskCreate(lvgl_task, "lvgl", HELIOS_LVGL_TASK_STACK, NULL, HELIOS_LVGL_TASK_PRIORITY, NULL);
+    xTaskCreatePinnedToCore(lvgl_task, "lvgl", HELIOS_LVGL_TASK_STACK, NULL,
+                            HELIOS_LVGL_TASK_PRIORITY, NULL, HELIOS_LVGL_TASK_CORE);
 }
