@@ -966,6 +966,96 @@ static esp_err_t mqtt_save_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ---- /debug : live diagnostics (values + graphs, no page reload) ---- */
+
+/* Client-side renderer: polls /debug/status.json every few seconds and
+ * repaints the value spans and the SVG sparklines in place. Built with the
+ * SVG DOM API (no attribute-quote gymnastics inside this C string) and only
+ * single quotes / HTML entities (no backslashes) so it embeds cleanly. */
+static const char DEBUG_LIVE_SCRIPT[] =
+"<script>(function(){"
+"var $=function(id){return document.getElementById(id);};"
+"function fmtUp(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);"
+"if(d>0)return d+'d '+h+'h';if(h>0)return h+'h '+m+'m';return m+'m '+(s%60)+'s';}"
+"function el(t,a){var e=document.createElementNS('http://www.w3.org/2000/svg',t);"
+"for(var k in a)e.setAttribute(k,a[k]);return e;}"
+"function spark(svg,series,lo,hi,markers){var W=300,H=90,all=[];"
+"series.forEach(function(s){all=all.concat(s.data);});"
+"all=all.filter(function(v){return v!=null&&!isNaN(v);});"
+"while(svg.firstChild)svg.removeChild(svg.firstChild);"
+"if(all.length<2)return;var mn=lo,mx=hi;"
+"if(mn==null){mn=Math.min.apply(null,all);mx=Math.max.apply(null,all);var pad=(mx-mn)*0.15||1;mn-=pad;mx+=pad;}"
+"var y=function(v){return H-(Math.max(mn,Math.min(mx,v))-mn)/(mx-mn)*H;};"
+"svg.setAttribute('viewBox','0 0 '+W+' '+H);svg.setAttribute('preserveAspectRatio','none');"
+"(markers||[]).forEach(function(m){var ym=y(m);"
+"svg.appendChild(el('line',{x1:0,y1:ym,x2:W,y2:ym,stroke:'var(--text-dim)','stroke-width':0.6,'stroke-dasharray':'3 3',opacity:0.45}));});"
+"series.forEach(function(s){var d=s.data,p=[];for(var i=0;i<d.length;i++){"
+"if(d[i]==null||isNaN(d[i]))continue;p.push((i*W/(d.length-1)).toFixed(1)+','+y(d[i]).toFixed(1));}"
+"svg.appendChild(el('polyline',{fill:'none',stroke:s.color,'stroke-width':1.6,'stroke-linejoin':'round',points:p.join(' ')}));});}"
+"function tick(){fetch('/debug/status.json').then(function(r){return r.json();}).then(function(j){"
+"var c=j.cur;$('v-up').textContent=fmtUp(j.uptime);"
+"$('v-temp').innerHTML=c.temp.toFixed(1)+' &deg;C';"
+"$('v-temp').style.color=c.temp>=80?'var(--bad)':c.temp>=70?'var(--warn)':'var(--ok)';"
+"$('v-cpu0').textContent=Math.round(c.cpu0)+' %';"
+"$('v-cpu1').textContent=Math.round(c.cpu1)+' %';"
+"$('v-heap').textContent=c.heap.toLocaleString()+' B';"
+"$('v-psram').textContent=c.psram.toLocaleString()+' B';"
+"$('v-rssi').textContent=j.wifi?c.rssi+' dBm':'-';"
+"var h=j.hist;"
+"spark($('g-temp'),[{data:h.temp,color:'var(--accent)'}],30,85,[70,80]);"
+"spark($('g-cpu'),[{data:h.cpu0,color:'var(--accent)'},{data:h.cpu1,color:'var(--ok)'}],0,100);"
+"spark($('g-heap'),[{data:h.heap.map(function(x){return x/1024;}),color:'var(--accent)'}],null,null);"
+"spark($('g-psram'),[{data:h.psram.map(function(x){return x/1024;}),color:'var(--accent)'}],null,null);"
+"spark($('g-rssi'),[{data:h.rssi,color:'var(--accent)'}],-90,-30);"
+"}).catch(function(){});}"
+"tick();setInterval(tick,3000);})();</script>";
+
+static esp_err_t debug_status_json_handler(httpd_req_t *req)
+{
+    diagnostics_status_t st;
+    diagnostics_get_status(&st);
+    diagnostics_sample_t h[DIAGNOSTICS_HISTORY];
+    size_t n = 0;
+    diagnostics_get_history(h, DIAGNOSTICS_HISTORY, &n);
+
+    httpd_resp_set_type(req, "application/json");
+    char b[360];
+    snprintf(b, sizeof(b),
+        "{\"uptime\":%lld,\"wifi\":%s,\"cur\":{\"temp\":%.1f,\"cpu0\":%.0f,\"cpu1\":%.0f,"
+        "\"heap\":%u,\"minheap\":%u,\"psram\":%u,\"rssi\":%d},\"hist\":{",
+        (long long)st.uptime_s, st.wifi_connected ? "true" : "false",
+        st.temperature_c, st.cpu0_pct, st.cpu1_pct,
+        (unsigned)st.free_heap, (unsigned)st.min_free_heap, (unsigned)st.free_psram, st.wifi_rssi);
+    httpd_resp_sendstr_chunk(req, b);
+
+    char arr[768];
+    size_t len;
+#define EMIT_ARR(NAME, FMT, EXPR)                                            \
+    len = snprintf(arr, sizeof(arr), "\"" NAME "\":[");                       \
+    for (size_t i = 0; i < n && len < sizeof(arr) - 24; i++) {                \
+        len += snprintf(arr + len, sizeof(arr) - len, "%s" FMT, i ? "," : "", EXPR); \
+    }                                                                        \
+    snprintf(arr + len, sizeof(arr) - len, "]");                             \
+    httpd_resp_sendstr_chunk(req, arr)
+
+    EMIT_ARR("temp", "%.1f", h[i].temperature_c);
+    httpd_resp_sendstr_chunk(req, ",");
+    EMIT_ARR("cpu0", "%.0f", h[i].cpu0_pct);
+    httpd_resp_sendstr_chunk(req, ",");
+    EMIT_ARR("cpu1", "%.0f", h[i].cpu1_pct);
+    httpd_resp_sendstr_chunk(req, ",");
+    EMIT_ARR("heap", "%u", (unsigned)h[i].free_heap);
+    httpd_resp_sendstr_chunk(req, ",");
+    EMIT_ARR("psram", "%u", (unsigned)h[i].free_psram);
+    httpd_resp_sendstr_chunk(req, ",");
+    EMIT_ARR("rssi", "%d", h[i].wifi_rssi);
+#undef EMIT_ARR
+
+    httpd_resp_sendstr_chunk(req, "}}");
+    httpd_resp_sendstr_chunk(req, NULL);
+    return ESP_OK;
+}
+
 /* ---- /debug : hardware self-tests ---- */
 
 static esp_err_t debug_get_handler(httpd_req_t *req)
@@ -976,22 +1066,44 @@ static esp_err_t debug_get_handler(httpd_req_t *req)
     open_page(req, "Helios Mini - Debug", "debug");
     send_chunk(req, "<h1>Debug</h1><div class='card'>");
 
-    char row[150];
-    snprintf(row, sizeof(row), "<div class='row'><span class='label'>Uptime</span><span>%llds</span></div>",
+    char row[220];
+    snprintf(row, sizeof(row), "<div class='row'><span class='label'>Uptime</span><span id='v-up'>%llds</span></div>",
              (long long)status.uptime_s);
     send_chunk(req, row);
-    snprintf(row, sizeof(row), "<div class='row'><span class='label'>Free heap</span><span>%u B</span></div>",
+    snprintf(row, sizeof(row), "<div class='row'><span class='label'>Die temperature</span><span id='v-temp'>%.1f &deg;C</span></div>",
+             status.temperature_c);
+    send_chunk(req, row);
+    snprintf(row, sizeof(row), "<div class='row'><span class='label'>CPU core 0</span><span id='v-cpu0'>%.0f %%</span></div>",
+             status.cpu0_pct);
+    send_chunk(req, row);
+    snprintf(row, sizeof(row), "<div class='row'><span class='label'>CPU core 1</span><span id='v-cpu1'>%.0f %%</span></div>",
+             status.cpu1_pct);
+    send_chunk(req, row);
+    snprintf(row, sizeof(row), "<div class='row'><span class='label'>Free internal RAM</span><span id='v-heap'>%u B</span></div>",
              (unsigned)status.free_heap);
     send_chunk(req, row);
-    snprintf(row, sizeof(row), "<div class='row'><span class='label'>Free PSRAM</span><span>%u B</span></div>",
+    snprintf(row, sizeof(row), "<div class='row'><span class='label'>Free PSRAM</span><span id='v-psram'>%u B</span></div>",
              (unsigned)status.free_psram);
     send_chunk(req, row);
-    if (status.wifi_connected) {
-        snprintf(row, sizeof(row), "<div class='row'><span class='label'>Wi-Fi signal</span><span>%d dBm</span></div>",
-                 status.wifi_rssi);
-        send_chunk(req, row);
-    }
+    snprintf(row, sizeof(row), "<div class='row'><span class='label'>Wi-Fi signal</span><span id='v-rssi'>%d dBm</span></div>",
+             status.wifi_rssi);
+    send_chunk(req, row);
     send_chunk(req, "</div>");
+
+    /* Graphs, filled and refreshed live by DEBUG_LIVE_SCRIPT (polls
+     * /debug/status.json, no page reload). */
+    send_chunk(req,
+        "<h2>Graphs</h2><div class='card'>"
+        "<div class='glabel'>Die temperature (&deg;C)</div><svg id='g-temp' class='spark'></svg>"
+        "<div class='glabel'>CPU load &mdash; core 0 / core 1 (%)</div><svg id='g-cpu' class='spark'></svg>"
+        "<div class='glabel'>Free internal RAM (KB)</div><svg id='g-heap' class='spark'></svg>"
+        "<div class='glabel'>Free PSRAM (KB)</div><svg id='g-psram' class='spark'></svg>"
+        "<div class='glabel'>Wi-Fi signal (dBm)</div><svg id='g-rssi' class='spark'></svg>"
+        "</div>"
+        "<style>.spark{width:100%;height:78px;display:block;margin:.2em 0 1em;"
+        "background:rgba(255,255,255,.02);border-radius:6px}"
+        ".glabel{font-size:.78em;color:var(--text-dim);margin:.4em 0 .1em}</style>");
+    send_chunk(req, DEBUG_LIVE_SCRIPT);
 
     send_chunk(req, "<h2>Screenshot</h2>");
     send_chunk(req, "<a class='link-button' href='/debug/screenshot.bmp'><button type='button'>");
@@ -1113,6 +1225,7 @@ void settings_server_start(void)
         { .uri = "/mqtt",               .method = HTTP_GET,  .handler = mqtt_get_handler },
         { .uri = "/mqtt/save",          .method = HTTP_POST, .handler = mqtt_save_post_handler },
         { .uri = "/debug",              .method = HTTP_GET,  .handler = debug_get_handler },
+        { .uri = "/debug/status.json",  .method = HTTP_GET,  .handler = debug_status_json_handler },
         { .uri = "/debug/screenshot.bmp", .method = HTTP_GET, .handler = debug_screenshot_handler },
         { .uri = "/debug/hard-reset",   .method = HTTP_GET,  .handler = debug_hard_reset_confirm_handler },
         { .uri = "/debug/hard-reset",   .method = HTTP_POST, .handler = debug_hard_reset_post_handler },

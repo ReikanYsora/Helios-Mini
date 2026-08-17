@@ -68,3 +68,8 @@ CONFIG_LV_DEF_REFR_PERIOD=16
 # the draw worker threads.
 CONFIG_LV_OS_FREERTOS=y
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+
+# Per-core CPU-usage % (via the idle task run-time counters) for the
+# diagnostics panel / MQTT. Cheap: one esp_timer read per context switch.
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y

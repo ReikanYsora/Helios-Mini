@@ -284,6 +284,8 @@ static void publish_all_discovery(void)
     publish_sensor_discovery("free_heap", "Free heap", "B", NULL, true);
     publish_sensor_discovery("free_psram", "Free PSRAM", "B", NULL, true);
     publish_sensor_discovery("uptime", "Uptime", "s", "duration", true);
+    publish_sensor_discovery("die_temperature", "Die temperature", "\xc2\xb0" "C", "temperature", true);
+    publish_sensor_discovery("cpu_usage", "CPU usage", "%", NULL, true);
     publish_sensor_discovery("irradiance", "Irradiance", "W/m\xc2\xb2", "irradiance", false);
     publish_sensor_discovery("cloud_cover", "Cloud cover", "%", NULL, false);
 }
@@ -466,6 +468,10 @@ static void publish_task(void *arg)
             mqtt_bridge_publish("free_psram/state", buf, false);
             snprintf(buf, sizeof(buf), "%lld", (long long)status.uptime_s);
             mqtt_bridge_publish("uptime/state", buf, false);
+            snprintf(buf, sizeof(buf), "%.1f", (double)status.temperature_c);
+            mqtt_bridge_publish("die_temperature/state", buf, false);
+            snprintf(buf, sizeof(buf), "%.0f", (double)((status.cpu0_pct + status.cpu1_pct) / 2.0f));
+            mqtt_bridge_publish("cpu_usage/state", buf, false);
 
             irradiance_reading_t irr = irradiance_model_get();
             if (irr.status == IRRADIANCE_LIVE) {
