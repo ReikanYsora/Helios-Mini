@@ -20,14 +20,14 @@
 #include <string.h>
 
 #define HELIOS_LCD_BITS_PER_PIXEL      16
-/* 30 -> 45 lines: PSRAM was a dead end for this buffer (see the flush
- * allocation below), so this is the safe lever left - fewer, bigger
- * partial-buffer flushes per full-height redraw (~16 -> ~11) without
- * pushing internal-RAM usage anywhere near the edge. Real numbers from
- * this board: steady-state free heap was 58619 B at 30 lines/DMA-RAM;
- * 45 lines costs ~27 KB more (466 * 15 extra lines * 2 bytes * 2
- * buffers), leaving a healthy ~31 KB margin. See docs/HARDWARE_REFERENCE.md. */
-#define HELIOS_LVGL_BUF_LINES          45
+/* Both partial-render buffers now live in internal DMA-capable RAM so the
+ * QSPI DMA sources them straight (no PSRAM bounce, no per-strip memcpy -
+ * see flush_cb), which restores real double-buffer pipelining: DMA one
+ * strip while the next renders. 30 lines keeps the two buffers at ~56 KB
+ * internal DMA total: bigger (60) starves the Wi-Fi/event stack of the same
+ * scarce DMA-capable internal RAM and crashes it at boot, even though the
+ * generic internal-heap figure still looks healthy. See docs/HARDWARE_REFERENCE.md. */
+#define HELIOS_LVGL_BUF_LINES          30
 #define HELIOS_LVGL_TICK_MS            2
 #define HELIOS_LVGL_TASK_STACK         (8 * 1024)
 /* Pinned to the APP core (core 1) at display_init() so the render/flush
@@ -49,10 +49,6 @@ static SemaphoreHandle_t s_flush_done = NULL;
  * plain bool is fine here: one ISR writer, one reader in lvgl_task, and
  * it only ever goes false->true once. */
 static volatile bool s_first_flush_done = false;
-/* Small internal DMA buffer the flush bounces each area through - the LVGL
- * draw buffers live in PSRAM (freeing internal RAM) but the QSPI DMA can't
- * source from there. */
-static uint8_t *s_bounce = NULL;
 static bool s_brightness_applied = false;
 
 /* CO5300 init sequence, ported from Waveshare's own factory firmware for
@@ -160,15 +156,14 @@ void display_set_brightness(uint8_t level)
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *color_p)
 {
     size_t px = lv_area_get_width(area) * lv_area_get_height(area);
-    /* color_p is in PSRAM (the LVGL draw buffers); the QSPI DMA can only
-     * source from internal RAM, so bounce this area through s_bounce. */
-    memcpy(s_bounce, color_p, px * 2);
-    lv_draw_sw_rgb565_swap(s_bounce, px);
+    /* color_p is a DMA-capable internal-RAM draw buffer, so byte-swap it in
+     * place and hand it straight to the panel - no bounce copy. */
+    lv_draw_sw_rgb565_swap(color_p, px);
 
     /* This panel's framebuffer is offset by 6 columns relative to the
      * physical drawable area - ported as-is from Waveshare's reference
      * firmware, which applies the same +6/+7 offset. */
-    esp_lcd_panel_draw_bitmap(s_panel, area->x1 + 6, area->y1, area->x2 + 7, area->y2 + 1, s_bounce);
+    esp_lcd_panel_draw_bitmap(s_panel, area->x1 + 6, area->y1, area->x2 + 7, area->y2 + 1, color_p);
 }
 
 static void rounder_cb(lv_event_t *e)
@@ -372,16 +367,18 @@ void display_init(void)
     lv_display_set_user_data(disp, s_panel);
     lv_display_add_event_cb(disp, rounder_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 
-    /* The two LVGL draw buffers live in PSRAM to keep ~tens of KB of scarce
-     * internal RAM free (the QSPI DMA can't source from PSRAM directly - it
-     * rejects it with a blank screen - so flush_cb bounces each area through
-     * s_bounce, one internal-RAM buffer sized to a full flush). */
+    /* Both draw buffers in internal DMA-capable RAM: the QSPI DMA reads them
+     * directly (it rejects PSRAM with a blank screen), so flush_cb needs no
+     * bounce and no per-strip memcpy, and the two buffers pipeline - DMA one
+     * strip while the next renders. Sized by HELIOS_LVGL_BUF_LINES to fit
+     * internal RAM; free heap is logged below to keep an eye on the margin. */
     size_t buf_size = HELIOS_LCD_H_RES * HELIOS_LVGL_BUF_LINES * LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565);
-    void *buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
-    void *buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
-    s_bounce = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
-    assert(buf1 && buf2 && s_bounce);
+    void *buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
+    void *buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
+    assert(buf1 && buf2);
     lv_display_set_buffers(disp, buf1, buf2, buf_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    ESP_LOGI("display", "LVGL draw buffers: 2 x %u B internal DMA, free internal heap %u B",
+             (unsigned)buf_size, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
     /* Figtree (the Helios brand font) as the default for every widget. */
     lv_theme_default_init(disp, lv_palette_main(LV_PALETTE_BLUE),
