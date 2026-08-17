@@ -62,3 +62,9 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_SPIRAM_SPEED_80M=y
 # Target 60 fps for the swipe and animations (was 33 ms / ~30 fps).
 CONFIG_LV_DEF_REFR_PERIOD=16
+
+# Render the anti-aliased arcs on both cores during the two-tile swipe
+# transition (the heaviest render case). Needs LVGL's FreeRTOS OS layer for
+# the draw worker threads.
+CONFIG_LV_OS_FREERTOS=y
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
